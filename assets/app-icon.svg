@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <rect width="1024" height="1024" rx="220" fill="#0a0f0d"/>
+  <rect x="24" y="24" width="976" height="976" rx="200" fill="none" stroke="#c8f560" stroke-opacity="0.2" stroke-width="8"/>
+  <!-- M monogram -->
+  <path fill="#c8f560" d="M260 720V320c0-28 20-44 48-44 24 0 44 14 58 42l146 300 146-300c14-28 34-42 58-42 28 0 48 16 48 44v400c0 26-18 44-44 44s-44-18-44-44V420L548 700c-12 26-44 26-56 0L364 420v300c0 26-18 44-44 44s-44-18-44-44z"/>
+  <!-- waveform -->
+  <g stroke="#c8f560" stroke-width="20" stroke-linecap="round" fill="none">
+    <line x1="292" y1="820" x2="292" y2="780"/>
+    <line x1="352" y1="840" x2="352" y2="760"/>
+    <line x1="412" y1="830" x2="412" y2="770"/>
+    <line x1="472" y1="850" x2="472" y2="750"/>
+    <line x1="532" y1="825" x2="532" y2="775"/>
+    <line x1="592" y1="845" x2="592" y2="755"/>
+    <line x1="652" y1="820" x2="652" y2="780"/>
+    <line x1="712" y1="835" x2="712" y2="765"/>
+  </g>
+</svg>
