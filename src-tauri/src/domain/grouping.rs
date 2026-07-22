@@ -4,11 +4,12 @@ use crate::domain::models::JobSummary;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[serde(tag = "kind")]
 pub enum JobListRow {
     #[serde(rename = "single")]
     Single { job: JobSummary },
-    #[serde(rename = "batch")]
+    /// Field-level camelCase is required: enum `rename_all` does not rename struct-variant fields.
+    #[serde(rename = "batch", rename_all = "camelCase")]
     Batch {
         batch_id: i64,
         jobs: Vec<JobSummary>,
@@ -185,5 +186,29 @@ mod tests {
             ]),
             "completed"
         );
+    }
+
+    /// Frontend reads row.batchId — serde must emit camelCase for batch fields
+    /// (enum container rename_all does NOT rename struct-variant fields).
+    #[test]
+    fn batch_row_json_uses_camel_case_for_view_navigation() {
+        let rows = build_job_list_rows(&[
+            job(1, Some(42), "queued", "2026-01-01T10:00:00Z"),
+            job(2, Some(42), "queued", "2026-01-01T11:00:00Z"),
+        ]);
+        assert_eq!(rows.len(), 1);
+        let json = serde_json::to_value(&rows[0]).expect("serialize");
+        assert_eq!(json["kind"], "batch", "kind tag for UI branch");
+        assert!(
+            json.get("batchId").is_some(),
+            "must expose batchId (got keys: {:?}) so JobsPage onOpenBatch works",
+            json.as_object().map(|o| o.keys().collect::<Vec<_>>())
+        );
+        assert_eq!(json["batchId"], 42);
+        assert!(json.get("createdAt").is_some(), "must expose createdAt");
+        assert!(json["jobs"].is_array());
+        assert_eq!(json["jobs"].as_array().unwrap().len(), 2);
+        // UI must not receive snake_case only
+        assert!(json.get("batch_id").is_none());
     }
 }

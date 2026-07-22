@@ -10,8 +10,9 @@
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
-    "test": "cargo test --manifest-path src-tauri/Cargo.toml",
-    "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml"
+    "test": "cargo test --manifest-path src-tauri/Cargo.toml && vitest run",
+    "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
+    "test:js": "vitest run"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
