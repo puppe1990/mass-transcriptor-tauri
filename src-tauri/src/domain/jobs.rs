@@ -475,6 +475,87 @@ pub fn read_transcript_markdown(conn: &Connection, job_id: i64) -> Result<String
     std::fs::read_to_string(&path).map_err(|e| e.to_string())
 }
 
+/// One downloadable transcript entry for batch "Download all".
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchTranscriptFile {
+    pub job_id: i64,
+    pub filename: String,
+    pub markdown: String,
+}
+
+fn markdown_download_name(original_filename: &str) -> String {
+    let base = Path::new(original_filename)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("transcript");
+    format!("{base}.md")
+}
+
+/// Completed jobs in a batch that have transcript markdown on disk.
+pub fn list_batch_transcripts(
+    conn: &Connection,
+    batch_id: i64,
+) -> Result<Vec<BatchTranscriptFile>, String> {
+    let batch = get_batch_detail(conn, batch_id)?
+        .ok_or_else(|| format!("Batch {batch_id} not found"))?;
+
+    let mut out = Vec::new();
+    for job in batch.jobs {
+        if job.status != "completed" {
+            continue;
+        }
+        let Some(path) = job.markdown_path.as_ref() else {
+            continue;
+        };
+        if !Path::new(path).exists() {
+            continue;
+        }
+        let markdown = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+        out.push(BatchTranscriptFile {
+            job_id: job.id,
+            filename: markdown_download_name(&job.original_filename),
+            markdown,
+        });
+    }
+    Ok(out)
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn batch_has_downloadable_transcripts(conn: &Connection, batch_id: i64) -> Result<bool, String> {
+    Ok(!list_batch_transcripts(conn, batch_id)?.is_empty())
+}
+
+/// ZIP of all completed transcripts (binary) for "Download all".
+pub fn build_batch_transcripts_zip(conn: &Connection, batch_id: i64) -> Result<Vec<u8>, String> {
+    let files = list_batch_transcripts(conn, batch_id)?;
+    if files.is_empty() {
+        return Err("No completed transcripts to download".into());
+    }
+
+    let mut cursor = std::io::Cursor::new(Vec::new());
+    {
+        let mut zip = zip::ZipWriter::new(&mut cursor);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        let mut used_names = std::collections::HashSet::new();
+        for (i, file) in files.iter().enumerate() {
+            let mut name = file.filename.clone();
+            if !used_names.insert(name.clone()) {
+                name = format!("{}_{}", i + 1, file.filename);
+                used_names.insert(name.clone());
+            }
+            zip.start_file(&name, options)
+                .map_err(|e| e.to_string())?;
+            use std::io::Write;
+            zip.write_all(file.markdown.as_bytes())
+                .map_err(|e| e.to_string())?;
+        }
+        zip.finish().map_err(|e| e.to_string())?;
+    }
+    Ok(cursor.into_inner())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -688,6 +769,78 @@ mod tests {
         .unwrap_err();
         assert!(err.to_lowercase().contains("missing") || err.contains("gone.wav"));
         let _ = audio;
+    }
+
+    #[test]
+    fn batch_download_all_only_completed_and_builds_zip() {
+        let (_dir, conn, storage, audio) = setup();
+        let path = audio.path().to_string_lossy().to_string();
+        let created = create_uploads_and_jobs(
+            &conn,
+            &storage,
+            &[
+                NewUploadFile {
+                    filename: "first.wav".into(),
+                    mime_type: "audio/wav".into(),
+                    size_bytes: 10,
+                    source_path: path.clone(),
+                },
+                NewUploadFile {
+                    filename: "second.wav".into(),
+                    mime_type: "audio/wav".into(),
+                    size_bytes: 10,
+                    source_path: path,
+                },
+            ],
+        )
+        .unwrap();
+        assert_eq!(created.len(), 2);
+        let batch_id = created[0].batch_id.expect("batch");
+
+        // none completed yet
+        assert!(list_batch_transcripts(&conn, batch_id).unwrap().is_empty());
+        assert!(!batch_has_downloadable_transcripts(&conn, batch_id).unwrap());
+        assert!(build_batch_transcripts_zip(&conn, batch_id).is_err());
+
+        // complete only first
+        mark_job_processing(&conn, created[0].id).unwrap();
+        mark_job_completed(
+            &conn,
+            &storage,
+            created[0].id,
+            &TranscriptionOutcome {
+                text: "alpha transcript".into(),
+                metadata: json!({}),
+            },
+        )
+        .unwrap();
+
+        let partial = list_batch_transcripts(&conn, batch_id).unwrap();
+        assert_eq!(partial.len(), 1);
+        assert_eq!(partial[0].filename, "first.md");
+        assert!(partial[0].markdown.contains("alpha transcript"));
+
+        // complete second
+        mark_job_processing(&conn, created[1].id).unwrap();
+        mark_job_completed(
+            &conn,
+            &storage,
+            created[1].id,
+            &TranscriptionOutcome {
+                text: "beta transcript".into(),
+                metadata: json!({}),
+            },
+        )
+        .unwrap();
+
+        let all = list_batch_transcripts(&conn, batch_id).unwrap();
+        assert_eq!(all.len(), 2);
+        assert!(batch_has_downloadable_transcripts(&conn, batch_id).unwrap());
+
+        let zip_bytes = build_batch_transcripts_zip(&conn, batch_id).unwrap();
+        assert!(zip_bytes.len() > 40, "zip should have payload");
+        // ZIP local file header magic
+        assert_eq!(&zip_bytes[0..2], b"PK");
     }
 
     #[test]

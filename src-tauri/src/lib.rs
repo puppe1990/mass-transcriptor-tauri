@@ -156,6 +156,27 @@ fn get_transcript_markdown(state: State<'_, AppState>, job_id: i64) -> Result<St
 }
 
 #[tauri::command]
+fn list_batch_transcripts(
+    state: State<'_, AppState>,
+    batch_id: i64,
+) -> Result<Vec<jobs::BatchTranscriptFile>, String> {
+    let conn = state.db.lock();
+    jobs::list_batch_transcripts(&conn, batch_id)
+}
+
+/// Returns base64-encoded ZIP of all completed batch transcripts.
+#[tauri::command]
+fn download_batch_transcripts_zip(
+    state: State<'_, AppState>,
+    batch_id: i64,
+) -> Result<String, String> {
+    let conn = state.db.lock();
+    let bytes = jobs::build_batch_transcripts_zip(&conn, batch_id)?;
+    use base64::Engine;
+    Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
+}
+
+#[tauri::command]
 fn app_info(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     Ok(serde_json::json!({
         "dbPath": state.db_path.to_string_lossy(),
@@ -183,6 +204,8 @@ pub fn run() {
                 if let Ok(icon) = Image::from_bytes(include_bytes!("../icons/icon.png")) {
                     let _ = window.set_icon(icon);
                 }
+                // Ensure maximized even if config is ignored on some platforms.
+                let _ = window.maximize();
             }
 
             Ok(())
@@ -198,6 +221,8 @@ pub fn run() {
             get_batch,
             retry_job,
             get_transcript_markdown,
+            list_batch_transcripts,
+            download_batch_transcripts_zip,
             app_info,
         ])
         .run(tauri::generate_context!())

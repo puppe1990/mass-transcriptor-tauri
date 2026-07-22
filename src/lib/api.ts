@@ -101,6 +101,21 @@ export async function getTranscriptMarkdown(jobId: number): Promise<string> {
   return invoke("get_transcript_markdown", { jobId });
 }
 
+export type BatchTranscriptFile = {
+  jobId: number;
+  filename: string;
+  markdown: string;
+};
+
+export async function listBatchTranscripts(batchId: number): Promise<BatchTranscriptFile[]> {
+  return invoke("list_batch_transcripts", { batchId });
+}
+
+/** Base64-encoded ZIP of all completed transcripts in the batch. */
+export async function downloadBatchTranscriptsZip(batchId: number): Promise<string> {
+  return invoke("download_batch_transcripts_zip", { batchId });
+}
+
 export async function createJobsFromPaths(paths: string[]): Promise<CreatedJob[]> {
   return invoke("create_jobs_from_paths", { paths });
 }

@@ -30,14 +30,19 @@ export default function App() {
   }
 
   function navigate(next: Route, id?: number) {
-    if (next === "job" && id != null) {
-      applyTarget({ route: "job", id });
+    if (next === "job") {
+      if (id != null) {
+        applyTarget({ route: "job", id });
+      } else {
+        applyTarget({ route: "jobs" });
+      }
       return;
     }
     if (next === "batch") {
       applyTarget(targetOpenBatch(id));
       return;
     }
+    // upload | jobs | settings — no id
     applyTarget({ route: next });
   }
 
