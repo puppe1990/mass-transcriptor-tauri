@@ -12,6 +12,7 @@ use domain::models::{
 };
 use domain::{jobs, settings};
 use std::path::PathBuf;
+use tauri::image::Image;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 #[tauri::command]
@@ -74,6 +75,22 @@ fn create_jobs_from_paths(
     }
 
     Ok(created)
+}
+
+/// Write a browser/HTML5-dropped file into a temp path so the job pipeline can read it.
+#[tauri::command]
+fn write_temp_upload(filename: String, bytes: Vec<u8>) -> Result<String, String> {
+    let safe = PathBuf::from(&filename)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("upload.bin")
+        .to_string();
+    let dir = std::env::temp_dir().join("mass-transcriptor-uploads");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let stamp = chrono::Utc::now().timestamp_millis();
+    let path = dir.join(format!("{stamp}_{safe}"));
+    std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
+    Ok(path.to_string_lossy().to_string())
 }
 
 fn spawn_process_job(app: AppHandle, state: AppState, job_id: i64) {
@@ -160,12 +177,21 @@ pub fn run() {
                 .map_err(|e| e.to_string())?;
             let state = AppState::initialize(data_dir)?;
             app.manage(state);
+
+            // Force window/dock icon in dev + release (bundle icon alone can lag in `tauri dev`).
+            if let Some(window) = app.get_webview_window("main") {
+                if let Ok(icon) = Image::from_bytes(include_bytes!("../icons/icon.png")) {
+                    let _ = window.set_icon(icon);
+                }
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             get_settings,
             update_settings,
             create_jobs_from_paths,
+            write_temp_upload,
             list_jobs,
             list_job_rows,
             get_job,
