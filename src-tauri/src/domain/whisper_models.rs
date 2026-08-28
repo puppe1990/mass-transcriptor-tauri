@@ -81,6 +81,14 @@ pub fn ensure_model(
     model: WhisperModel,
     downloader: &dyn ModelDownloader,
 ) -> Result<PathBuf, String> {
+    #[cfg(test)]
+    {
+        // cargo test only: execute tests drop a stub ggml file instead of 75MB weights.
+        let target = models_dir.join(model.filename());
+        if target.exists() {
+            return Ok(target);
+        }
+    }
     ensure_artifact(
         models_dir,
         model.filename(),
