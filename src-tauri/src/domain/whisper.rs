@@ -42,15 +42,59 @@ pub trait WhisperEngine: Send + Sync {
     ) -> Result<TranscriptionOutcome, String>;
 }
 
-pub struct UnimplementedWhisper;
+pub struct WhisperRsEngine;
 
-impl WhisperEngine for UnimplementedWhisper {
+impl WhisperEngine for WhisperRsEngine {
     fn transcribe(
         &self,
-        _: &Path,
-        _: &WhisperTranscribeOptions,
+        wav_path: &Path,
+        opts: &WhisperTranscribeOptions,
     ) -> Result<TranscriptionOutcome, String> {
-        Err(err_infer(WhisperModel::Base))
+        let model_path = opts
+            .model_path
+            .to_str()
+            .ok_or_else(|| "invalid model path".to_string())?;
+        let ctx = whisper_rs::WhisperContext::new_with_params(
+            model_path,
+            whisper_rs::WhisperContextParameters::default(),
+        )
+        .map_err(|e| e.to_string())?;
+        let mut state = ctx.create_state().map_err(|e| e.to_string())?;
+
+        let mut reader = hound::WavReader::open(wav_path).map_err(|e| e.to_string())?;
+        let samples_i16: Vec<i16> = reader
+            .samples::<i16>()
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        let mut audio = vec![0.0f32; samples_i16.len()];
+        whisper_rs::convert_integer_to_float_audio(&samples_i16, &mut audio)
+            .map_err(|e| e.to_string())?;
+
+        let mut params =
+            whisper_rs::FullParams::new(whisper_rs::SamplingStrategy::Greedy { best_of: 1 });
+        params.set_translate(false);
+        params.set_print_special(false);
+        params.set_print_progress(false);
+        params.set_print_realtime(false);
+        params.set_print_timestamps(false);
+        match opts.language.as_deref() {
+            Some(lang) => params.set_language(Some(lang)),
+            None => params.set_language(None),
+        }
+
+        state.full(params, &audio).map_err(|e| e.to_string())?;
+        // whisper-rs 0.16: full_n_segments returns c_int; text is on WhisperSegment via as_iter().
+        let mut text = String::new();
+        for segment in state.as_iter() {
+            text.push_str(segment.to_str().map_err(|e| e.to_string())?);
+        }
+        Ok(TranscriptionOutcome {
+            text: text.trim().to_string(),
+            metadata: serde_json::json!({
+                "model": opts.model.as_str(),
+                "language": opts.language,
+            }),
+        })
     }
 }
 

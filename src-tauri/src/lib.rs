@@ -12,8 +12,8 @@ use domain::jobs::TranscriptionDeps;
 use domain::models::{
     AppSettings, BatchDetail, CreatedJob, JobDetail, JobSummary, NewUploadFile, UpdateSettingsInput,
 };
-use domain::whisper::UnimplementedWhisper;
-use domain::whisper_models::UnimplementedDownloader;
+use domain::whisper::WhisperRsEngine;
+use domain::whisper_models::ReqwestModelDownloader;
 use domain::{jobs, settings};
 use std::path::PathBuf;
 use tauri::image::Image;
@@ -100,9 +100,9 @@ fn write_temp_upload(filename: String, bytes: Vec<u8>) -> Result<String, String>
 fn spawn_process_job(app: AppHandle, state: AppState, job_id: i64) {
     std::thread::spawn(move || {
         let transport = ReqwestTransport::default();
-        let whisper = UnimplementedWhisper;
+        let whisper = WhisperRsEngine;
         let ffmpeg = SystemFfmpeg;
-        let models = UnimplementedDownloader;
+        let models = ReqwestModelDownloader::default();
         let deps = TranscriptionDeps {
             http: &transport,
             whisper: &whisper,

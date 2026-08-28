@@ -64,11 +64,31 @@ pub trait ModelDownloader: Send + Sync {
     fn download(&self, url: &str, dest: &Path) -> Result<(), String>;
 }
 
-pub struct UnimplementedDownloader;
+pub struct ReqwestModelDownloader {
+    client: reqwest::blocking::Client,
+}
 
-impl ModelDownloader for UnimplementedDownloader {
-    fn download(&self, _: &str, _: &Path) -> Result<(), String> {
-        Err("model downloader not implemented".into())
+impl Default for ReqwestModelDownloader {
+    fn default() -> Self {
+        Self {
+            client: reqwest::blocking::Client::builder()
+                .timeout(std::time::Duration::from_secs(600))
+                .user_agent("mass-transcriptor-tauri")
+                .build()
+                .expect("reqwest client"),
+        }
+    }
+}
+
+impl ModelDownloader for ReqwestModelDownloader {
+    fn download(&self, url: &str, dest: &Path) -> Result<(), String> {
+        let mut resp = self.client.get(url).send().map_err(|e| e.to_string())?;
+        if !resp.status().is_success() {
+            return Err(format!("HTTP {}", resp.status()));
+        }
+        let mut file = std::fs::File::create(dest).map_err(|e| e.to_string())?;
+        std::io::copy(&mut resp, &mut file).map_err(|e| e.to_string())?;
+        Ok(())
     }
 }
 
