@@ -7,6 +7,7 @@ export type AppSettings = {
   assemblyaiApiKey: string | null;
   hasApiKey: boolean;
   language: string;
+  whisperModel: string;
 };
 
 export type JobSummary = {
@@ -56,6 +57,7 @@ export type UpdateSettingsInput = {
   defaultProvider: string;
   assemblyaiApiKey?: string | null;
   language: string;
+  whisperModel: string;
 };
 
 export async function getSettings(): Promise<AppSettings> {

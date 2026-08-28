@@ -156,8 +156,8 @@ export function UploadPage({ onCreated, onOpenJobs }: Props) {
         <p className="page__eyebrow">Local</p>
         <h1 className="page__title">Upload Audio or Video</h1>
         <p className="page__subtitle">
-          Drop audio or short video files here. Files are transcribed with AssemblyAI using your
-          local API key.
+          Drop audio or short video files here. Files are transcribed with the default
+          provider from Settings.
         </p>
         <div className="page__actions">
           <a
