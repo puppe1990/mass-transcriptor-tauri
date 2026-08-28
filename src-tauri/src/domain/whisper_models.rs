@@ -64,6 +64,14 @@ pub trait ModelDownloader: Send + Sync {
     fn download(&self, url: &str, dest: &Path) -> Result<(), String>;
 }
 
+pub struct UnimplementedDownloader;
+
+impl ModelDownloader for UnimplementedDownloader {
+    fn download(&self, _: &str, _: &Path) -> Result<(), String> {
+        Err("model downloader not implemented".into())
+    }
+}
+
 pub fn sha1_hex(bytes: &[u8]) -> String {
     format!("{:x}", Sha1::digest(bytes))
 }

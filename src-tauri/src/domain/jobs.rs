@@ -1,15 +1,18 @@
 //! Upload → job/batch lifecycle against SQLite (no tenants/users).
 
 use crate::domain::assemblyai::{self, HttpTransport, TranscribeOptions};
+use crate::domain::ffmpeg::Ffmpeg;
 use crate::domain::markdown;
 use crate::domain::models::{
     BatchDetail, CreatedJob, JobDetail, JobSummary, NewUploadFile, TranscriptionOutcome,
 };
 use crate::domain::settings;
 use crate::domain::storage::StorageRoot;
+use crate::domain::whisper::{self, WhisperEngine};
+use crate::domain::whisper_models::{ModelDownloader, WhisperModel};
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 const AUDIO_EXTS: &[&str] = &[
     "wav", "mp3", "ogg", "opus", "m4a", "flac", "webm", "aac", "wma", "mpga", "oga",
@@ -343,15 +346,42 @@ fn job_audio_path(conn: &Connection, job_id: i64) -> Result<(String, String), St
 
 /// Work package loaded under a short DB lock; safe to use after the lock is released.
 #[derive(Debug, Clone)]
-pub struct PreparedTranscription {
-    pub audio_path: String,
-    pub opts: TranscribeOptions,
+pub enum PreparedTranscription {
+    AssemblyAi {
+        audio_path: String,
+        opts: TranscribeOptions,
+    },
+    Whisper {
+        #[allow(dead_code)]
+        job_id: i64,
+        #[allow(dead_code)]
+        audio_path: String,
+        #[allow(dead_code)]
+        original_filename: String,
+        #[allow(dead_code)]
+        model: WhisperModel,
+        #[allow(dead_code)]
+        language: Option<String>,
+        #[allow(dead_code)]
+        models_dir: PathBuf,
+    },
+}
+
+pub struct TranscriptionDeps<'a> {
+    pub http: &'a dyn HttpTransport,
+    #[allow(dead_code)]
+    pub whisper: &'a dyn WhisperEngine,
+    pub ffmpeg: &'a dyn Ffmpeg,
+    #[allow(dead_code)]
+    pub models: &'a dyn ModelDownloader,
 }
 
 /// Phase 1 (short lock): mark processing and load paths/settings. Returns `Ok(None)` if already completed.
 pub fn prepare_transcription(
     conn: &Connection,
     job_id: i64,
+    ffmpeg: &dyn Ffmpeg,
+    models_dir: &Path,
 ) -> Result<Option<PreparedTranscription>, String> {
     let detail = get_job_detail(conn, job_id)?
         .ok_or_else(|| format!("Job {job_id} not found"))?;
@@ -363,21 +393,6 @@ pub fn prepare_transcription(
     mark_job_processing(conn, job_id)?;
 
     let (audio_path, provider_key) = job_audio_path(conn, job_id)?;
-    if provider_key != "assemblyai" {
-        let msg = format!("Provider {provider_key} is not available in this version");
-        mark_job_failed(conn, job_id, &msg)?;
-        return Err(msg);
-    }
-
-    let api_key = match settings::assemblyai_api_key(conn)? {
-        Some(k) => k,
-        None => {
-            let msg = "AssemblyAI requires an API key in Settings".to_string();
-            mark_job_failed(conn, job_id, &msg)?;
-            return Err(msg);
-        }
-    };
-
     let settings = settings::get_settings(conn)?;
     let language = if settings.language == "auto" {
         None
@@ -385,23 +400,68 @@ pub fn prepare_transcription(
         Some(settings.language)
     };
 
-    Ok(Some(PreparedTranscription {
-        audio_path,
-        opts: TranscribeOptions {
-            api_key,
-            language,
-            poll_interval: std::time::Duration::from_secs(3),
-            max_polls: 60,
-        },
-    }))
+    match provider_key.as_str() {
+        "assemblyai" => {
+            let api_key = match settings::assemblyai_api_key(conn)? {
+                Some(k) => k,
+                None => {
+                    let msg = "AssemblyAI requires an API key in Settings".to_string();
+                    mark_job_failed(conn, job_id, &msg)?;
+                    return Err(msg);
+                }
+            };
+            Ok(Some(PreparedTranscription::AssemblyAi {
+                audio_path,
+                opts: TranscribeOptions {
+                    api_key,
+                    language,
+                    poll_interval: std::time::Duration::from_secs(3),
+                    max_polls: 60,
+                },
+            }))
+        }
+        "whisper" => {
+            if !ffmpeg.is_available() {
+                let msg = whisper::ERR_FFMPEG_MISSING.to_string();
+                mark_job_failed(conn, job_id, &msg)?;
+                return Err(msg);
+            }
+            let model = WhisperModel::parse(&settings.whisper_model)?;
+            Ok(Some(PreparedTranscription::Whisper {
+                job_id,
+                audio_path,
+                original_filename: detail.original_filename,
+                model,
+                language,
+                models_dir: models_dir.to_path_buf(),
+            }))
+        }
+        other => {
+            let msg = format!("Provider {other} is not available in this version");
+            mark_job_failed(conn, job_id, &msg)?;
+            Err(msg)
+        }
+    }
 }
 
 /// Phase 2 (no DB): network upload/poll only — must not hold SQLite locks.
 pub fn execute_transcription(
-    transport: &dyn HttpTransport,
+    deps: &TranscriptionDeps,
     prepared: &PreparedTranscription,
 ) -> Result<TranscriptionOutcome, String> {
-    assemblyai::transcribe(transport, Path::new(&prepared.audio_path), &prepared.opts)
+    match prepared {
+        PreparedTranscription::AssemblyAi { audio_path, opts } => {
+            assemblyai::transcribe(deps.http, Path::new(audio_path), opts)
+        }
+        PreparedTranscription::Whisper { .. } => execute_whisper(deps, prepared),
+    }
+}
+
+fn execute_whisper(
+    _deps: &TranscriptionDeps,
+    _prepared: &PreparedTranscription,
+) -> Result<TranscriptionOutcome, String> {
+    Err("whisper execute not implemented".into())
 }
 
 /// Phase 3 (short lock): persist success or failure.
@@ -429,21 +489,19 @@ pub fn finish_transcription(
 pub fn process_transcription_job_with_lock(
     db: &parking_lot::Mutex<Connection>,
     storage: &StorageRoot,
-    transport: &dyn HttpTransport,
+    deps: &TranscriptionDeps,
+    models_dir: &Path,
     job_id: i64,
 ) -> Result<(), String> {
     let prepared = {
         let conn = db.lock();
-        prepare_transcription(&conn, job_id)?
+        prepare_transcription(&conn, job_id, deps.ffmpeg, models_dir)?
     };
-
     let Some(prepared) = prepared else {
         return Ok(());
     };
-
     // Network I/O + sleep: SQLite mutex is intentionally free so UI commands can run.
-    let network_result = execute_transcription(transport, &prepared);
-
+    let network_result = execute_transcription(deps, &prepared);
     {
         let conn = db.lock();
         finish_transcription(&conn, storage, job_id, network_result)
@@ -455,14 +513,15 @@ pub fn process_transcription_job_with_lock(
 pub fn process_transcription_job(
     conn: &Connection,
     storage: &StorageRoot,
-    transport: &dyn HttpTransport,
+    deps: &TranscriptionDeps,
+    models_dir: &Path,
     job_id: i64,
 ) -> Result<(), String> {
-    let prepared = prepare_transcription(conn, job_id)?;
+    let prepared = prepare_transcription(conn, job_id, deps.ffmpeg, models_dir)?;
     let Some(prepared) = prepared else {
         return Ok(());
     };
-    let network_result = execute_transcription(transport, &prepared);
+    let network_result = execute_transcription(deps, &prepared);
     finish_transcription(conn, storage, job_id, network_result)
 }
 
@@ -561,10 +620,46 @@ mod tests {
     use super::*;
     use crate::db;
     use crate::domain::assemblyai::HttpTransport;
+    use crate::domain::ffmpeg::Ffmpeg;
+    use crate::domain::whisper::{ScriptedWhisper, ERR_FFMPEG_MISSING};
+    use crate::domain::whisper_models::{ModelDownloader, WhisperModel};
     use parking_lot::Mutex;
     use serde_json::{json, Value};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::{tempdir, NamedTempFile};
+
+    struct AvailableFfmpeg;
+    impl Ffmpeg for AvailableFfmpeg {
+        fn is_available(&self) -> bool {
+            true
+        }
+        fn to_wav_16k_mono(&self, src: &Path, dest: &Path) -> Result<(), String> {
+            std::fs::copy(src, dest).map(|_| ()).map_err(|e| e.to_string())
+        }
+    }
+
+    struct MissingFfmpeg;
+    impl Ffmpeg for MissingFfmpeg {
+        fn is_available(&self) -> bool {
+            false
+        }
+        fn to_wav_16k_mono(&self, _src: &Path, _dest: &Path) -> Result<(), String> {
+            Err("should not convert".into())
+        }
+    }
+
+    struct NoopDownloader;
+    impl ModelDownloader for NoopDownloader {
+        fn download(&self, _url: &str, _dest: &Path) -> Result<(), String> {
+            Err("download should not run".into())
+        }
+    }
+
+    fn models_dir(dir: &tempfile::TempDir) -> std::path::PathBuf {
+        let p = dir.path().join("whisper-models");
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
 
     struct SeqTransport {
         step: AtomicUsize,
@@ -873,7 +968,7 @@ mod tests {
 
     #[test]
     fn process_job_success_and_failure_via_transport() {
-        let (_dir, conn, storage, audio) = setup();
+        let (dir, conn, storage, audio) = setup();
         let files = vec![NewUploadFile {
             filename: "talk.wav".into(),
             mime_type: "audio/wav".into(),
@@ -887,9 +982,27 @@ mod tests {
             fail: false,
         };
         // Drive real prepare → execute → finish with zero poll (override opts after prepare).
-        let mut prepared = prepare_transcription(&conn, job_id).unwrap().unwrap();
-        prepared.opts.poll_interval = std::time::Duration::ZERO;
-        let outcome = execute_transcription(&ok, &prepared).unwrap();
+        let mut prepared = prepare_transcription(&conn, job_id, &AvailableFfmpeg, &models_dir(&dir))
+            .unwrap()
+            .unwrap();
+        if let PreparedTranscription::AssemblyAi { opts, .. } = &mut prepared {
+            opts.poll_interval = std::time::Duration::ZERO;
+        } else {
+            panic!("assemblyai");
+        }
+        let whisper = ScriptedWhisper {
+            text: String::new(),
+            fail: true,
+        };
+        let ffmpeg = AvailableFfmpeg;
+        let models = NoopDownloader;
+        let deps = TranscriptionDeps {
+            http: &ok,
+            whisper: &whisper,
+            ffmpeg: &ffmpeg,
+            models: &models,
+        };
+        let outcome = execute_transcription(&deps, &prepared).unwrap();
         finish_transcription(&conn, &storage, job_id, Ok(outcome)).unwrap();
         let detail = get_job_detail(&conn, job_id).unwrap().unwrap();
         assert_eq!(detail.status, "completed");
@@ -910,7 +1023,20 @@ mod tests {
             step: AtomicUsize::new(0),
             fail: true,
         };
-        let err = process_transcription_job(&conn, &storage, &fail_t, job2).unwrap_err();
+        let fail_deps = TranscriptionDeps {
+            http: &fail_t,
+            whisper: &whisper,
+            ffmpeg: &ffmpeg,
+            models: &models,
+        };
+        let err = process_transcription_job(
+            &conn,
+            &storage,
+            &fail_deps,
+            &models_dir(&dir),
+            job2,
+        )
+        .unwrap_err();
         assert_eq!(err, "provider boom");
         let failed = get_job_detail(&conn, job2).unwrap().unwrap();
         assert_eq!(failed.status, "failed");
@@ -1001,9 +1127,28 @@ mod tests {
 
         let db_worker = db.clone();
         let storage_worker = StorageRoot::new(dir.path().join("storage"));
+        let md_worker = dir.path().join("whisper-models");
         // Production entry used by Tauri spawn_process_job.
         let worker = thread::spawn(move || {
-            process_transcription_job_with_lock(&db_worker, &storage_worker, &transport, job_id)
+            let whisper = ScriptedWhisper {
+                text: String::new(),
+                fail: true,
+            };
+            let ffmpeg = AvailableFfmpeg;
+            let models = NoopDownloader;
+            let deps = TranscriptionDeps {
+                http: &transport,
+                whisper: &whisper,
+                ffmpeg: &ffmpeg,
+                models: &models,
+            };
+            process_transcription_job_with_lock(
+                &db_worker,
+                &storage_worker,
+                &deps,
+                &md_worker,
+                job_id,
+            )
         });
 
         // Concurrent UI-style read while worker is blocked in network phase.
@@ -1034,7 +1179,7 @@ mod tests {
 
     #[test]
     fn prepare_skips_completed_and_fails_without_api_key() {
-        let (_dir, conn, storage, audio) = setup();
+        let (dir, conn, storage, audio) = setup();
         let path = audio.path().to_string_lossy().to_string();
         let job_id = create_uploads_and_jobs(
             &conn,
@@ -1060,7 +1205,9 @@ mod tests {
             },
         )
         .unwrap();
-        assert!(prepare_transcription(&conn, job_id).unwrap().is_none());
+        assert!(prepare_transcription(&conn, job_id, &AvailableFfmpeg, &models_dir(&dir))
+            .unwrap()
+            .is_none());
 
         // clear api key, new job → prepare fails and marks failed
         settings::update_settings(
@@ -1086,7 +1233,7 @@ mod tests {
         )
         .unwrap()[0]
         .id;
-        let err = prepare_transcription(&conn, job2).unwrap_err();
+        let err = prepare_transcription(&conn, job2, &AvailableFfmpeg, &models_dir(&dir)).unwrap_err();
         assert!(err.to_lowercase().contains("api key"));
         let detail = get_job_detail(&conn, job2).unwrap().unwrap();
         assert_eq!(detail.status, "failed");
@@ -1166,13 +1313,146 @@ mod tests {
             step: AtomicUsize::new(0),
             fail: true,
         };
-        let err =
-            process_transcription_job_with_lock(&db, &storage, &fail_t, job_id).unwrap_err();
+        let whisper = ScriptedWhisper {
+            text: String::new(),
+            fail: true,
+        };
+        let ffmpeg = AvailableFfmpeg;
+        let models = NoopDownloader;
+        let deps = TranscriptionDeps {
+            http: &fail_t,
+            whisper: &whisper,
+            ffmpeg: &ffmpeg,
+            models: &models,
+        };
+        let err = process_transcription_job_with_lock(
+            &db,
+            &storage,
+            &deps,
+            &dir.path().join("whisper-models"),
+            job_id,
+        )
+        .unwrap_err();
         assert_eq!(err, "provider boom");
         let conn = db.lock();
         assert_eq!(
             get_job_detail(&conn, job_id).unwrap().unwrap().status,
             "failed"
         );
+    }
+
+    #[test]
+    fn whisper_prepare_succeeds_without_api_key() {
+        let (dir, conn, storage, audio) = setup();
+        settings::update_settings(
+            &conn,
+            crate::domain::models::UpdateSettingsInput {
+                workspace_name: "Local".into(),
+                default_provider: "whisper".into(),
+                assemblyai_api_key: Some("".into()),
+                language: "pt".into(),
+                whisper_model: "tiny".into(),
+            },
+        )
+        .unwrap();
+        let job_id = create_uploads_and_jobs(
+            &conn,
+            &storage,
+            &[NewUploadFile {
+                filename: "clip.wav".into(),
+                mime_type: "audio/wav".into(),
+                size_bytes: 16,
+                source_path: audio.path().to_string_lossy().into(),
+            }],
+        )
+        .unwrap()[0]
+            .id;
+        let prepared = prepare_transcription(
+            &conn,
+            job_id,
+            &AvailableFfmpeg,
+            &models_dir(&dir),
+        )
+        .unwrap()
+        .unwrap();
+        match prepared {
+            PreparedTranscription::Whisper {
+                model,
+                language,
+                original_filename,
+                ..
+            } => {
+                assert_eq!(model, WhisperModel::Tiny);
+                assert_eq!(language.as_deref(), Some("pt"));
+                assert_eq!(original_filename, "clip.wav");
+            }
+            PreparedTranscription::AssemblyAi { .. } => panic!("expected whisper"),
+        }
+        assert_eq!(
+            get_job_detail(&conn, job_id).unwrap().unwrap().status,
+            "processing"
+        );
+    }
+
+    #[test]
+    fn whisper_prepare_fails_without_ffmpeg() {
+        let (dir, conn, storage, audio) = setup();
+        settings::update_settings(
+            &conn,
+            crate::domain::models::UpdateSettingsInput {
+                workspace_name: "Local".into(),
+                default_provider: "whisper".into(),
+                assemblyai_api_key: None,
+                language: "auto".into(),
+                whisper_model: "base".into(),
+            },
+        )
+        .unwrap();
+        let job_id = create_uploads_and_jobs(
+            &conn,
+            &storage,
+            &[NewUploadFile {
+                filename: "clip.wav".into(),
+                mime_type: "audio/wav".into(),
+                size_bytes: 16,
+                source_path: audio.path().to_string_lossy().into(),
+            }],
+        )
+        .unwrap()[0]
+            .id;
+        let err = prepare_transcription(&conn, job_id, &MissingFfmpeg, &models_dir(&dir)).unwrap_err();
+        assert_eq!(err, ERR_FFMPEG_MISSING);
+        let detail = get_job_detail(&conn, job_id).unwrap().unwrap();
+        assert_eq!(detail.status, "failed");
+        assert_eq!(detail.error_message.as_deref(), Some(ERR_FFMPEG_MISSING));
+    }
+
+    #[test]
+    fn create_job_stamps_whisper_provider() {
+        let (_dir, conn, storage, audio) = setup();
+        settings::update_settings(
+            &conn,
+            crate::domain::models::UpdateSettingsInput {
+                workspace_name: "Local".into(),
+                default_provider: "whisper".into(),
+                assemblyai_api_key: None,
+                language: "auto".into(),
+                whisper_model: "base".into(),
+            },
+        )
+        .unwrap();
+        let created = create_uploads_and_jobs(
+            &conn,
+            &storage,
+            &[NewUploadFile {
+                filename: "a.wav".into(),
+                mime_type: "audio/wav".into(),
+                size_bytes: 8,
+                source_path: audio.path().to_string_lossy().into(),
+            }],
+        )
+        .unwrap();
+        let detail = get_job_detail(&conn, created[0].id).unwrap().unwrap();
+        assert_eq!(detail.provider_key, "whisper");
     }
 }

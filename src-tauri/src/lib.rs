@@ -6,10 +6,14 @@ mod domain;
 
 use app_state::AppState;
 use domain::assemblyai::ReqwestTransport;
+use domain::ffmpeg::SystemFfmpeg;
 use domain::grouping::JobListRow;
+use domain::jobs::TranscriptionDeps;
 use domain::models::{
     AppSettings, BatchDetail, CreatedJob, JobDetail, JobSummary, NewUploadFile, UpdateSettingsInput,
 };
+use domain::whisper::UnimplementedWhisper;
+use domain::whisper_models::UnimplementedDownloader;
 use domain::{jobs, settings};
 use std::path::PathBuf;
 use tauri::image::Image;
@@ -96,10 +100,24 @@ fn write_temp_upload(filename: String, bytes: Vec<u8>) -> Result<String, String>
 fn spawn_process_job(app: AppHandle, state: AppState, job_id: i64) {
     std::thread::spawn(move || {
         let transport = ReqwestTransport::default();
+        let whisper = UnimplementedWhisper;
+        let ffmpeg = SystemFfmpeg;
+        let models = UnimplementedDownloader;
+        let deps = TranscriptionDeps {
+            http: &transport,
+            whisper: &whisper,
+            ffmpeg: &ffmpeg,
+            models: &models,
+        };
         let storage = state.storage();
         // Uses short DB locks only around prepare/finish — not during AssemblyAI network I/O.
-        let result =
-            jobs::process_transcription_job_with_lock(&state.db, &storage, &transport, job_id);
+        let result = jobs::process_transcription_job_with_lock(
+            &state.db,
+            &storage,
+            &deps,
+            &state.models_dir,
+            job_id,
+        );
         let _ = app.emit(
             "job-updated",
             serde_json::json!({

@@ -42,6 +42,18 @@ pub trait WhisperEngine: Send + Sync {
     ) -> Result<TranscriptionOutcome, String>;
 }
 
+pub struct UnimplementedWhisper;
+
+impl WhisperEngine for UnimplementedWhisper {
+    fn transcribe(
+        &self,
+        _: &Path,
+        _: &WhisperTranscribeOptions,
+    ) -> Result<TranscriptionOutcome, String> {
+        Err(err_infer(WhisperModel::Base))
+    }
+}
+
 #[cfg(test)]
 pub struct ScriptedWhisper {
     pub text: String,
