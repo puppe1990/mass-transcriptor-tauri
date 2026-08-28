@@ -22,6 +22,7 @@ pub fn migrate(conn: &Connection) -> Result<(), String> {
             default_provider TEXT NOT NULL DEFAULT 'assemblyai',
             assemblyai_api_key TEXT,
             language TEXT NOT NULL DEFAULT 'auto',
+            whisper_model TEXT NOT NULL DEFAULT 'base',
             updated_at TEXT NOT NULL
         );
 
@@ -66,6 +67,23 @@ pub fn migrate(conn: &Connection) -> Result<(), String> {
         "#,
     )
     .map_err(|e| e.to_string())?;
+
+    let mut stmt = conn
+        .prepare("PRAGMA table_info(app_settings)")
+        .map_err(|e| e.to_string())?;
+    let names: Vec<String> = stmt
+        .query_map([], |r| r.get::<_, String>(1))
+        .map_err(|e| e.to_string())?
+        .collect::<Result<_, _>>()
+        .map_err(|e| e.to_string())?;
+    drop(stmt);
+    if !names.iter().any(|n| n == "whisper_model") {
+        conn.execute(
+            "ALTER TABLE app_settings ADD COLUMN whisper_model TEXT NOT NULL DEFAULT 'base'",
+            [],
+        )
+        .map_err(|e| e.to_string())?;
+    }
 
     // Seed single settings row if missing
     let exists: Option<i64> = conn
@@ -114,5 +132,14 @@ mod tests {
         assert!(!tables.iter().any(|t| t.contains("tenant")));
         assert!(!tables.iter().any(|t| t.contains("session")));
         assert!(!tables.iter().any(|t| t.contains("password")));
+
+        let cols: Vec<String> = conn
+            .prepare("PRAGMA table_info(app_settings)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(cols.contains(&"whisper_model".into()));
     }
 }

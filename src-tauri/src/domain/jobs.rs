@@ -618,6 +618,7 @@ mod tests {
                 default_provider: "assemblyai".into(),
                 assemblyai_api_key: Some("test-key".into()),
                 language: "auto".into(),
+                whisper_model: "base".into(),
             },
         )
         .unwrap();
@@ -969,6 +970,7 @@ mod tests {
                 default_provider: "assemblyai".into(),
                 assemblyai_api_key: Some("test-key".into()),
                 language: "auto".into(),
+                whisper_model: "base".into(),
             },
         )
         .unwrap();
@@ -1068,6 +1070,7 @@ mod tests {
                 default_provider: "assemblyai".into(),
                 assemblyai_api_key: Some("".into()),
                 language: "auto".into(),
+                whisper_model: "base".into(),
             },
         )
         .unwrap();
@@ -1137,6 +1140,7 @@ mod tests {
                 default_provider: "assemblyai".into(),
                 assemblyai_api_key: Some("k".into()),
                 language: "en".into(),
+                whisper_model: "base".into(),
             },
         )
         .unwrap();
