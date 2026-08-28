@@ -426,7 +426,13 @@ pub fn prepare_transcription(
                 mark_job_failed(conn, job_id, &msg)?;
                 return Err(msg);
             }
-            let model = WhisperModel::parse(&settings.whisper_model)?;
+            let model = match WhisperModel::parse(&settings.whisper_model) {
+                Ok(m) => m,
+                Err(msg) => {
+                    mark_job_failed(conn, job_id, &msg)?;
+                    return Err(msg);
+                }
+            };
             Ok(Some(PreparedTranscription::Whisper {
                 job_id,
                 audio_path,
@@ -444,7 +450,7 @@ pub fn prepare_transcription(
     }
 }
 
-/// Phase 2 (no DB): network upload/poll only — must not hold SQLite locks.
+/// Phase 2 (no DB): HTTP (AssemblyAI) or local Whisper — must not hold SQLite locks.
 pub fn execute_transcription(
     deps: &TranscriptionDeps,
     prepared: &PreparedTranscription,
@@ -483,7 +489,7 @@ pub fn finish_transcription(
     }
 }
 
-/// Process one job: only holds `db` during prepare and finish — never during HTTP/poll.
+/// Process one job: only holds `db` during prepare and finish — never during execute.
 ///
 /// This is the production entry path used by Tauri background workers.
 pub fn process_transcription_job_with_lock(
@@ -500,7 +506,7 @@ pub fn process_transcription_job_with_lock(
     let Some(prepared) = prepared else {
         return Ok(());
     };
-    // Network I/O + sleep: SQLite mutex is intentionally free so UI commands can run.
+    // Execute (HTTP or local Whisper): SQLite mutex is free so UI commands can run.
     let network_result = execute_transcription(deps, &prepared);
     {
         let conn = db.lock();
@@ -1454,5 +1460,50 @@ mod tests {
         .unwrap();
         let detail = get_job_detail(&conn, created[0].id).unwrap().unwrap();
         assert_eq!(detail.provider_key, "whisper");
+    }
+
+    #[test]
+    fn whisper_prepare_fails_on_invalid_model() {
+        let (dir, conn, storage, audio) = setup();
+        settings::update_settings(
+            &conn,
+            crate::domain::models::UpdateSettingsInput {
+                workspace_name: "Local".into(),
+                default_provider: "whisper".into(),
+                assemblyai_api_key: None,
+                language: "auto".into(),
+                whisper_model: "base".into(),
+            },
+        )
+        .unwrap();
+        let job_id = create_uploads_and_jobs(
+            &conn,
+            &storage,
+            &[NewUploadFile {
+                filename: "clip.wav".into(),
+                mime_type: "audio/wav".into(),
+                size_bytes: 16,
+                source_path: audio.path().to_string_lossy().into(),
+            }],
+        )
+        .unwrap()[0]
+            .id;
+        conn.execute("UPDATE app_settings SET whisper_model = 'medium' WHERE id = 1", [])
+            .unwrap();
+        let err = prepare_transcription(&conn, job_id, &AvailableFfmpeg, &models_dir(&dir))
+            .unwrap_err();
+        assert!(
+            err.contains("not allowed") || err.contains("medium"),
+            "unexpected parse error: {err}"
+        );
+        let detail = get_job_detail(&conn, job_id).unwrap().unwrap();
+        assert_eq!(detail.status, "failed");
+        assert!(detail.retryable);
+        assert!(
+            detail
+                .error_message
+                .as_deref()
+                .is_some_and(|m| m.contains("medium") || m.contains("not allowed"))
+        );
     }
 }
