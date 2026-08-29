@@ -5,10 +5,11 @@ use rusqlite::Connection;
 
 const ALLOWED_PROVIDERS: &[&str] = &["assemblyai", "whisper"];
 const ALLOWED_LANGUAGES: &[&str] = &["auto", "pt", "en", "es"];
+const ALLOWED_WHISPER_MODELS: &[&str] = &["tiny", "base", "small"];
 
 pub fn get_settings(conn: &Connection) -> Result<AppSettings, String> {
     conn.query_row(
-        "SELECT workspace_name, default_provider, assemblyai_api_key, language
+        "SELECT workspace_name, default_provider, assemblyai_api_key, language, whisper_model
          FROM app_settings WHERE id = 1",
         [],
         |row| {
@@ -20,6 +21,7 @@ pub fn get_settings(conn: &Connection) -> Result<AppSettings, String> {
                 assemblyai_api_key: if has { key } else { None },
                 has_api_key: has,
                 language: row.get(3)?,
+                whisper_model: row.get(4)?,
             })
         },
     )
@@ -45,6 +47,11 @@ pub fn update_settings(
         return Err(format!("Language '{language}' is not allowed"));
     }
 
+    let whisper_model = input.whisper_model.trim().to_lowercase();
+    if !ALLOWED_WHISPER_MODELS.contains(&whisper_model.as_str()) {
+        return Err(format!("Whisper model '{whisper_model}' is not allowed"));
+    }
+
     let existing = get_settings(conn)?;
     let api_key = match input.assemblyai_api_key {
         Some(k) if !k.trim().is_empty() => Some(k.trim().to_string()),
@@ -64,13 +71,15 @@ pub fn update_settings(
             default_provider = ?2,
             assemblyai_api_key = ?3,
             language = ?4,
-            updated_at = ?5
+            whisper_model = ?5,
+            updated_at = ?6
          WHERE id = 1",
         rusqlite::params![
             workspace_name,
             default_provider,
             api_key,
             language,
+            whisper_model,
             now
         ],
     )
@@ -102,6 +111,7 @@ mod tests {
                 default_provider: "assemblyai".into(),
                 assemblyai_api_key: None,
                 language: "auto".into(),
+                whisper_model: "base".into(),
             },
         )
         .unwrap_err();
@@ -114,6 +124,7 @@ mod tests {
                 default_provider: "bogus".into(),
                 assemblyai_api_key: None,
                 language: "auto".into(),
+                whisper_model: "base".into(),
             },
         )
         .unwrap_err();
@@ -131,6 +142,7 @@ mod tests {
                 default_provider: "assemblyai".into(),
                 assemblyai_api_key: Some("fixture-key-not-real".into()),
                 language: "en".into(),
+                whisper_model: "base".into(),
             },
         )
         .unwrap();
@@ -142,6 +154,7 @@ mod tests {
                 default_provider: "assemblyai".into(),
                 assemblyai_api_key: None, // omit → keep
                 language: "pt".into(),
+                whisper_model: "base".into(),
             },
         )
         .unwrap();
@@ -170,6 +183,7 @@ mod tests {
                 default_provider: "assemblyai".into(),
                 assemblyai_api_key: Some("fixture-key-not-real".into()),
                 language: "pt".into(),
+                whisper_model: "base".into(),
             },
         )
         .unwrap();
@@ -188,5 +202,86 @@ mod tests {
             reloaded.assemblyai_api_key.as_deref(),
             Some("fixture-key-not-real")
         );
+    }
+
+    #[test]
+    fn persists_whisper_provider_and_model() {
+        let dir = tempdir().unwrap();
+        let conn = db::open(&dir.path().join("s.db")).unwrap();
+
+        let updated = update_settings(
+            &conn,
+            UpdateSettingsInput {
+                workspace_name: "Studio".into(),
+                default_provider: "whisper".into(),
+                assemblyai_api_key: None,
+                language: "pt".into(),
+                whisper_model: "small".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(updated.default_provider, "whisper");
+        assert_eq!(updated.whisper_model, "small");
+        assert_eq!(get_settings(&conn).unwrap().whisper_model, "small");
+    }
+
+    #[test]
+    fn rejects_invalid_whisper_model() {
+        let dir = tempdir().unwrap();
+        let conn = db::open(&dir.path().join("s.db")).unwrap();
+        let err = update_settings(
+            &conn,
+            UpdateSettingsInput {
+                workspace_name: "Ok".into(),
+                default_provider: "whisper".into(),
+                assemblyai_api_key: None,
+                language: "auto".into(),
+                whisper_model: "medium".into(),
+            },
+        )
+        .unwrap_err();
+        assert!(err.contains("Whisper model"));
+        assert!(err.contains("medium"));
+    }
+
+    #[test]
+    fn default_whisper_model_is_base() {
+        let dir = tempdir().unwrap();
+        let conn = db::open(&dir.path().join("s.db")).unwrap();
+        assert_eq!(get_settings(&conn).unwrap().whisper_model, "base");
+    }
+
+    #[test]
+    fn switching_to_whisper_keeps_existing_api_key() {
+        let dir = tempdir().unwrap();
+        let conn = db::open(&dir.path().join("s.db")).unwrap();
+        update_settings(
+            &conn,
+            UpdateSettingsInput {
+                workspace_name: "A".into(),
+                default_provider: "assemblyai".into(),
+                assemblyai_api_key: Some("fixture-key-not-real".into()),
+                language: "en".into(),
+                whisper_model: "base".into(),
+            },
+        )
+        .unwrap();
+        let updated = update_settings(
+            &conn,
+            UpdateSettingsInput {
+                workspace_name: "A".into(),
+                default_provider: "whisper".into(),
+                assemblyai_api_key: None,
+                language: "en".into(),
+                whisper_model: "tiny".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            updated.assemblyai_api_key.as_deref(),
+            Some("fixture-key-not-real")
+        );
+        assert_eq!(updated.default_provider, "whisper");
+        assert_eq!(updated.whisper_model, "tiny");
     }
 }

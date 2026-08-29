@@ -8,6 +8,11 @@ pub struct AppSettings {
     pub assemblyai_api_key: Option<String>,
     pub has_api_key: bool,
     pub language: String,
+    pub whisper_model: String,
+}
+
+fn default_whisper_model() -> String {
+    "base".into()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -19,6 +24,8 @@ pub struct UpdateSettingsInput {
     #[serde(default)]
     pub assemblyai_api_key: Option<String>,
     pub language: String,
+    #[serde(default = "default_whisper_model")]
+    pub whisper_model: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

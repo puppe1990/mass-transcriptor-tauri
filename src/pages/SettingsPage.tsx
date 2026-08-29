@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { getSettings, updateSettings, type AppSettings } from "../lib/api";
+import { getSettings, updateSettings, type AppSettings, type UpdateSettingsInput } from "../lib/api";
 
 export function SettingsPage() {
   const [settings, setSettings] = useState<AppSettings | null>(null);
@@ -7,6 +7,7 @@ export function SettingsPage() {
   const [defaultProvider, setDefaultProvider] = useState("assemblyai");
   const [apiKey, setApiKey] = useState("");
   const [language, setLanguage] = useState("auto");
+  const [whisperModel, setWhisperModel] = useState("base");
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -18,6 +19,7 @@ export function SettingsPage() {
         setWorkspaceName(s.workspaceName);
         setDefaultProvider(s.defaultProvider);
         setLanguage(s.language);
+        setWhisperModel(s.whisperModel);
         setApiKey("");
       })
       .catch((e) => setError(e instanceof Error ? e.message : String(e)));
@@ -29,21 +31,18 @@ export function SettingsPage() {
     setMessage(null);
     setError(null);
     try {
-      const input: {
-        workspaceName: string;
-        defaultProvider: string;
-        language: string;
-        assemblyaiApiKey?: string | null;
-      } = {
+      const input: UpdateSettingsInput = {
         workspaceName,
         defaultProvider,
         language,
+        whisperModel,
       };
       if (apiKey.trim() !== "") {
         input.assemblyaiApiKey = apiKey.trim();
       }
       const updated = await updateSettings(input);
       setSettings(updated);
+      setWhisperModel(updated.whisperModel);
       setApiKey("");
       setMessage("Settings saved.");
     } catch (err) {
@@ -68,6 +67,7 @@ export function SettingsPage() {
           <strong>{settings?.workspaceName ?? "Local"}</strong>
           <p>Local desktop app · no multi-user login</p>
           <p>AssemblyAI uses the API key stored in local SQLite settings.</p>
+          <p>Whisper is local and does not use that key.</p>
         </div>
       </div>
 
@@ -100,11 +100,30 @@ export function SettingsPage() {
                 aria-label="Default provider"
               >
                 <option value="assemblyai">assemblyai</option>
-                <option value="whisper" disabled>
-                  whisper (not available)
-                </option>
+                <option value="whisper">whisper</option>
               </select>
             </label>
+            {defaultProvider === "whisper" && (
+              <>
+                <label className="settings-form__field">
+                  <span>Whisper model</span>
+                  <select
+                    id="settings-whisper-model"
+                    value={whisperModel}
+                    onChange={(e) => setWhisperModel(e.target.value)}
+                    aria-label="Whisper model"
+                  >
+                    <option value="tiny">tiny (~75 MB)</option>
+                    <option value="base">base (~142 MB)</option>
+                    <option value="small">small (~466 MB)</option>
+                  </select>
+                </label>
+                <p className="settings-shell__lede">
+                  The first Whisper job for a model size downloads a ggml file into app data.
+                  ffmpeg must be installed and available as the <code>ffmpeg</code> command.
+                </p>
+              </>
+            )}
             <label className="settings-form__field">
               <span>Transcription language</span>
               <select

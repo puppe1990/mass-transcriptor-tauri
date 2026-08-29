@@ -11,6 +11,7 @@ use std::sync::Arc;
 pub struct AppState {
     pub db_path: PathBuf,
     pub storage_root: PathBuf,
+    pub models_dir: PathBuf,
     /// Serializes SQLite access (rusqlite Connection is not Sync across threads easily).
     pub db: Arc<Mutex<Connection>>,
 }
@@ -21,11 +22,14 @@ impl AppState {
         let db_path = app_data_dir.join("mass-transcriptor.db");
         let storage_root = app_data_dir.join("storage");
         std::fs::create_dir_all(&storage_root).map_err(|e| e.to_string())?;
+        let models_dir = app_data_dir.join("whisper-models");
+        std::fs::create_dir_all(&models_dir).map_err(|e| e.to_string())?;
 
         let conn = db::open(&db_path)?;
         Ok(Self {
             db_path,
             storage_root,
+            models_dir,
             db: Arc::new(Mutex::new(conn)),
         })
     }
