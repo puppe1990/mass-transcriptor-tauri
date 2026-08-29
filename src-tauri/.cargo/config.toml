@@ -1,0 +1,4 @@
+# whisper.cpp / ggml use std::filesystem, which Apple's libc++
+# only enables at macOS 10.15+. Tauri's default min version is older.
+[env]
+MACOSX_DEPLOYMENT_TARGET = "11.0"
