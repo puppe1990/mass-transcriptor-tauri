@@ -1,11 +1,11 @@
 //! Workspace settings persisted in SQLite (no tenant/user).
 
 use crate::domain::models::{AppSettings, UpdateSettingsInput};
+use crate::domain::whisper_models::WhisperModel;
 use rusqlite::Connection;
 
 const ALLOWED_PROVIDERS: &[&str] = &["assemblyai", "whisper"];
 const ALLOWED_LANGUAGES: &[&str] = &["auto", "pt", "en", "es"];
-const ALLOWED_WHISPER_MODELS: &[&str] = &["tiny", "base", "small"];
 
 pub fn get_settings(conn: &Connection) -> Result<AppSettings, String> {
     conn.query_row(
@@ -47,10 +47,9 @@ pub fn update_settings(
         return Err(format!("Language '{language}' is not allowed"));
     }
 
-    let whisper_model = input.whisper_model.trim().to_lowercase();
-    if !ALLOWED_WHISPER_MODELS.contains(&whisper_model.as_str()) {
-        return Err(format!("Whisper model '{whisper_model}' is not allowed"));
-    }
+    let whisper_model = WhisperModel::parse(&input.whisper_model)?
+        .as_str()
+        .to_string();
 
     let existing = get_settings(conn)?;
     let api_key = match input.assemblyai_api_key {
@@ -59,8 +58,7 @@ pub fn update_settings(
         None => existing.assemblyai_api_key.clone(),
     };
 
-    if default_provider == "assemblyai" && api_key.as_ref().map(|k| k.is_empty()).unwrap_or(true)
-    {
+    if default_provider == "assemblyai" && api_key.as_ref().map(|k| k.is_empty()).unwrap_or(true) {
         // allow saving workspace without key, but mark provider needs key at run time
     }
 
@@ -236,12 +234,31 @@ mod tests {
                 default_provider: "whisper".into(),
                 assemblyai_api_key: None,
                 language: "auto".into(),
-                whisper_model: "medium".into(),
+                whisper_model: "parakeet".into(),
             },
         )
         .unwrap_err();
         assert!(err.contains("Whisper model"));
-        assert!(err.contains("medium"));
+        assert!(err.contains("parakeet"));
+    }
+
+    #[test]
+    fn accepts_medium_q8_and_canonicalizes_alias() {
+        let dir = tempdir().unwrap();
+        let conn = db::open(&dir.path().join("s.db")).unwrap();
+        let updated = update_settings(
+            &conn,
+            UpdateSettingsInput {
+                workspace_name: "Ok".into(),
+                default_provider: "whisper".into(),
+                assemblyai_api_key: None,
+                language: "auto".into(),
+                whisper_model: "medium".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(updated.whisper_model, "medium-q8");
+        assert_eq!(get_settings(&conn).unwrap().whisper_model, "medium-q8");
     }
 
     #[test]

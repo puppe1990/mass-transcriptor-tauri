@@ -9,7 +9,7 @@ use crate::domain::models::{
 use crate::domain::settings;
 use crate::domain::storage::StorageRoot;
 use crate::domain::whisper::{self, WhisperEngine, WhisperTranscribeOptions};
-use crate::domain::whisper_models::{self, ModelDownloader, WhisperModel};
+use crate::domain::whisper_models::{self, RequireModelError, WhisperModel};
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
@@ -92,8 +92,11 @@ pub fn create_uploads_and_jobs(
         .map_err(|e| e.to_string())?;
         let upload_id = conn.last_insert_rowid();
 
-        let audio_path = storage
-            .write_audio_from_path(upload_id, &file.filename, Path::new(&file.source_path))?;
+        let audio_path = storage.write_audio_from_path(
+            upload_id,
+            &file.filename,
+            Path::new(&file.source_path),
+        )?;
         let audio_path_str = audio_path.to_string_lossy().to_string();
 
         conn.execute(
@@ -156,7 +159,9 @@ pub fn list_jobs(conn: &Connection) -> Result<Vec<JobSummary>, String> {
 }
 
 /// Flat jobs collapsed into batch + single UI rows.
-pub fn list_job_rows(conn: &Connection) -> Result<Vec<crate::domain::grouping::JobListRow>, String> {
+pub fn list_job_rows(
+    conn: &Connection,
+) -> Result<Vec<crate::domain::grouping::JobListRow>, String> {
     let jobs = list_jobs(conn)?;
     Ok(crate::domain::grouping::build_job_list_rows(&jobs))
 }
@@ -214,9 +219,7 @@ pub fn get_batch_detail(conn: &Connection, batch_id: i64) -> Result<Option<Batch
     };
 
     let mut stmt = conn
-        .prepare(
-            "SELECT j.id FROM transcription_jobs j WHERE j.batch_id = ?1 ORDER BY j.id ASC",
-        )
+        .prepare("SELECT j.id FROM transcription_jobs j WHERE j.batch_id = ?1 ORDER BY j.id ASC")
         .map_err(|e| e.to_string())?;
 
     let ids: Vec<i64> = stmt
@@ -257,8 +260,7 @@ pub fn mark_job_completed(
     job_id: i64,
     outcome: &TranscriptionOutcome,
 ) -> Result<(), String> {
-    let detail = get_job_detail(conn, job_id)?
-        .ok_or_else(|| format!("Job {job_id} not found"))?;
+    let detail = get_job_detail(conn, job_id)?.ok_or_else(|| format!("Job {job_id} not found"))?;
 
     let md = markdown::render(
         &outcome.text,
@@ -306,8 +308,7 @@ pub fn mark_job_failed(conn: &Connection, job_id: i64, message: &str) -> Result<
 }
 
 pub fn retry_job(conn: &Connection, job_id: i64) -> Result<JobDetail, String> {
-    let detail = get_job_detail(conn, job_id)?
-        .ok_or_else(|| format!("Job {job_id} not found"))?;
+    let detail = get_job_detail(conn, job_id)?.ok_or_else(|| format!("Job {job_id} not found"))?;
 
     if !detail.retryable {
         return Err("Job is not retryable".into());
@@ -365,7 +366,6 @@ pub struct TranscriptionDeps<'a> {
     pub http: &'a dyn HttpTransport,
     pub whisper: &'a dyn WhisperEngine,
     pub ffmpeg: &'a dyn Ffmpeg,
-    pub models: &'a dyn ModelDownloader,
 }
 
 /// Phase 1 (short lock): mark processing and load paths/settings. Returns `Ok(None)` if already completed.
@@ -375,8 +375,7 @@ pub fn prepare_transcription(
     ffmpeg: &dyn Ffmpeg,
     models_dir: &Path,
 ) -> Result<Option<PreparedTranscription>, String> {
-    let detail = get_job_detail(conn, job_id)?
-        .ok_or_else(|| format!("Job {job_id} not found"))?;
+    let detail = get_job_detail(conn, job_id)?.ok_or_else(|| format!("Job {job_id} not found"))?;
 
     if detail.status == "completed" {
         return Ok(None);
@@ -471,8 +470,12 @@ fn execute_whisper(
         return Err("not a whisper job".into());
     };
 
-    let model_path = whisper_models::ensure_model(models_dir, *model, deps.models)
-        .map_err(|_| whisper::err_download(*model))?;
+    let model_path = match whisper_models::require_model(models_dir, *model) {
+        Ok(path) => path,
+        Err(RequireModelError::Missing) => return Err(whisper::err_not_downloaded(*model)),
+        Err(RequireModelError::Corrupt) => return Err(whisper::err_corrupt(*model)),
+        Err(RequireModelError::Io(e)) => return Err(e),
+    };
 
     let tmp = std::env::temp_dir().join(format!(
         "mass-transcriptor-whisper-{}-{}.wav",
@@ -563,8 +566,7 @@ pub fn process_transcription_job(
 }
 
 pub fn read_transcript_markdown(conn: &Connection, job_id: i64) -> Result<String, String> {
-    let detail = get_job_detail(conn, job_id)?
-        .ok_or_else(|| format!("Job {job_id} not found"))?;
+    let detail = get_job_detail(conn, job_id)?.ok_or_else(|| format!("Job {job_id} not found"))?;
     let path = detail
         .markdown_path
         .ok_or_else(|| "Transcript not available".to_string())?;
@@ -593,8 +595,8 @@ pub fn list_batch_transcripts(
     conn: &Connection,
     batch_id: i64,
 ) -> Result<Vec<BatchTranscriptFile>, String> {
-    let batch = get_batch_detail(conn, batch_id)?
-        .ok_or_else(|| format!("Batch {batch_id} not found"))?;
+    let batch =
+        get_batch_detail(conn, batch_id)?.ok_or_else(|| format!("Batch {batch_id} not found"))?;
 
     let mut out = Vec::new();
     for job in batch.jobs {
@@ -618,7 +620,10 @@ pub fn list_batch_transcripts(
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
-pub fn batch_has_downloadable_transcripts(conn: &Connection, batch_id: i64) -> Result<bool, String> {
+pub fn batch_has_downloadable_transcripts(
+    conn: &Connection,
+    batch_id: i64,
+) -> Result<bool, String> {
     Ok(!list_batch_transcripts(conn, batch_id)?.is_empty())
 }
 
@@ -641,8 +646,7 @@ pub fn build_batch_transcripts_zip(conn: &Connection, batch_id: i64) -> Result<V
                 name = format!("{}_{}", i + 1, file.filename);
                 used_names.insert(name.clone());
             }
-            zip.start_file(&name, options)
-                .map_err(|e| e.to_string())?;
+            zip.start_file(&name, options).map_err(|e| e.to_string())?;
             use std::io::Write;
             zip.write_all(file.markdown.as_bytes())
                 .map_err(|e| e.to_string())?;
@@ -659,7 +663,7 @@ mod tests {
     use crate::domain::assemblyai::HttpTransport;
     use crate::domain::ffmpeg::Ffmpeg;
     use crate::domain::whisper::{ScriptedWhisper, ERR_FFMPEG_MISSING};
-    use crate::domain::whisper_models::{ModelDownloader, WhisperModel};
+    use crate::domain::whisper_models::WhisperModel;
     use parking_lot::Mutex;
     use serde_json::{json, Value};
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -671,7 +675,9 @@ mod tests {
             true
         }
         fn to_wav_16k_mono(&self, src: &Path, dest: &Path) -> Result<(), String> {
-            std::fs::copy(src, dest).map(|_| ()).map_err(|e| e.to_string())
+            std::fs::copy(src, dest)
+                .map(|_| ())
+                .map_err(|e| e.to_string())
         }
     }
 
@@ -692,13 +698,6 @@ mod tests {
         }
         fn to_wav_16k_mono(&self, _src: &Path, _dest: &Path) -> Result<(), String> {
             Err("boom".into())
-        }
-    }
-
-    struct NoopDownloader;
-    impl ModelDownloader for NoopDownloader {
-        fn download(&self, _url: &str, _dest: &Path) -> Result<(), String> {
-            Err("download should not run".into())
         }
     }
 
@@ -802,7 +801,11 @@ mod tests {
         let detail = get_job_detail(&conn, job_id).unwrap().unwrap();
         assert_eq!(detail.status, "completed");
         assert_eq!(detail.transcript_text.as_deref(), Some("hello world"));
-        assert!(detail.markdown_path.as_ref().unwrap().contains("transcript.md"));
+        assert!(detail
+            .markdown_path
+            .as_ref()
+            .unwrap()
+            .contains("transcript.md"));
         let md = std::fs::read_to_string(detail.markdown_path.as_ref().unwrap()).unwrap();
         assert!(md.contains("hello world"));
         assert!(md.contains("clip.wav"));
@@ -1029,9 +1032,10 @@ mod tests {
             fail: false,
         };
         // Drive real prepare → execute → finish with zero poll (override opts after prepare).
-        let mut prepared = prepare_transcription(&conn, job_id, &AvailableFfmpeg, &models_dir(&dir))
-            .unwrap()
-            .unwrap();
+        let mut prepared =
+            prepare_transcription(&conn, job_id, &AvailableFfmpeg, &models_dir(&dir))
+                .unwrap()
+                .unwrap();
         if let PreparedTranscription::AssemblyAi { opts, .. } = &mut prepared {
             opts.poll_interval = std::time::Duration::ZERO;
         } else {
@@ -1042,12 +1046,11 @@ mod tests {
             fail: true,
         };
         let ffmpeg = AvailableFfmpeg;
-        let models = NoopDownloader;
+
         let deps = TranscriptionDeps {
             http: &ok,
             whisper: &whisper,
             ffmpeg: &ffmpeg,
-            models: &models,
         };
         let outcome = execute_transcription(&deps, &prepared).unwrap();
         finish_transcription(&conn, &storage, job_id, Ok(outcome)).unwrap();
@@ -1074,16 +1077,9 @@ mod tests {
             http: &fail_t,
             whisper: &whisper,
             ffmpeg: &ffmpeg,
-            models: &models,
         };
-        let err = process_transcription_job(
-            &conn,
-            &storage,
-            &fail_deps,
-            &models_dir(&dir),
-            job2,
-        )
-        .unwrap_err();
+        let err = process_transcription_job(&conn, &storage, &fail_deps, &models_dir(&dir), job2)
+            .unwrap_err();
         assert_eq!(err, "provider boom");
         let failed = get_job_detail(&conn, job2).unwrap().unwrap();
         assert_eq!(failed.status, "failed");
@@ -1160,7 +1156,7 @@ mod tests {
             }],
         )
         .unwrap()[0]
-        .id;
+            .id;
 
         // Same Mutex shape as AppState / production path.
         drop(conn);
@@ -1182,12 +1178,10 @@ mod tests {
                 fail: true,
             };
             let ffmpeg = AvailableFfmpeg;
-            let models = NoopDownloader;
             let deps = TranscriptionDeps {
                 http: &transport,
                 whisper: &whisper,
                 ffmpeg: &ffmpeg,
-                models: &models,
             };
             process_transcription_job_with_lock(
                 &db_worker,
@@ -1218,10 +1212,7 @@ mod tests {
         let conn = db.lock();
         let done = get_job_detail(&conn, job_id).unwrap().unwrap();
         assert_eq!(done.status, "completed");
-        assert_eq!(
-            done.transcript_text.as_deref(),
-            Some("unlocked transcript")
-        );
+        assert_eq!(done.transcript_text.as_deref(), Some("unlocked transcript"));
     }
 
     #[test]
@@ -1239,7 +1230,7 @@ mod tests {
             }],
         )
         .unwrap()[0]
-        .id;
+            .id;
 
         mark_job_processing(&conn, job_id).unwrap();
         mark_job_completed(
@@ -1252,9 +1243,11 @@ mod tests {
             },
         )
         .unwrap();
-        assert!(prepare_transcription(&conn, job_id, &AvailableFfmpeg, &models_dir(&dir))
-            .unwrap()
-            .is_none());
+        assert!(
+            prepare_transcription(&conn, job_id, &AvailableFfmpeg, &models_dir(&dir))
+                .unwrap()
+                .is_none()
+        );
 
         // clear api key, new job → prepare fails and marks failed
         settings::update_settings(
@@ -1279,8 +1272,9 @@ mod tests {
             }],
         )
         .unwrap()[0]
-        .id;
-        let err = prepare_transcription(&conn, job2, &AvailableFfmpeg, &models_dir(&dir)).unwrap_err();
+            .id;
+        let err =
+            prepare_transcription(&conn, job2, &AvailableFfmpeg, &models_dir(&dir)).unwrap_err();
         assert!(err.to_lowercase().contains("api key"));
         let detail = get_job_detail(&conn, job2).unwrap().unwrap();
         assert_eq!(detail.status, "failed");
@@ -1300,7 +1294,7 @@ mod tests {
             }],
         )
         .unwrap()[0]
-        .id;
+            .id;
 
         mark_job_processing(&conn, job_id).unwrap();
         mark_job_completed(
@@ -1351,7 +1345,7 @@ mod tests {
             }],
         )
         .unwrap()[0]
-        .id;
+            .id;
         drop(conn);
 
         let db = Mutex::new(db::open(&dir.path().join("prod.db")).unwrap());
@@ -1365,12 +1359,11 @@ mod tests {
             fail: true,
         };
         let ffmpeg = AvailableFfmpeg;
-        let models = NoopDownloader;
+
         let deps = TranscriptionDeps {
             http: &fail_t,
             whisper: &whisper,
             ffmpeg: &ffmpeg,
-            models: &models,
         };
         let err = process_transcription_job_with_lock(
             &db,
@@ -1414,14 +1407,9 @@ mod tests {
         )
         .unwrap()[0]
             .id;
-        let prepared = prepare_transcription(
-            &conn,
-            job_id,
-            &AvailableFfmpeg,
-            &models_dir(&dir),
-        )
-        .unwrap()
-        .unwrap();
+        let prepared = prepare_transcription(&conn, job_id, &AvailableFfmpeg, &models_dir(&dir))
+            .unwrap()
+            .unwrap();
         match prepared {
             PreparedTranscription::Whisper {
                 model,
@@ -1467,7 +1455,8 @@ mod tests {
         )
         .unwrap()[0]
             .id;
-        let err = prepare_transcription(&conn, job_id, &MissingFfmpeg, &models_dir(&dir)).unwrap_err();
+        let err =
+            prepare_transcription(&conn, job_id, &MissingFfmpeg, &models_dir(&dir)).unwrap_err();
         assert_eq!(err, ERR_FFMPEG_MISSING);
         let detail = get_job_detail(&conn, job_id).unwrap().unwrap();
         assert_eq!(detail.status, "failed");
@@ -1529,23 +1518,24 @@ mod tests {
         )
         .unwrap()[0]
             .id;
-        conn.execute("UPDATE app_settings SET whisper_model = 'medium' WHERE id = 1", [])
-            .unwrap();
-        let err = prepare_transcription(&conn, job_id, &AvailableFfmpeg, &models_dir(&dir))
-            .unwrap_err();
+        conn.execute(
+            "UPDATE app_settings SET whisper_model = 'bogus' WHERE id = 1",
+            [],
+        )
+        .unwrap();
+        let err =
+            prepare_transcription(&conn, job_id, &AvailableFfmpeg, &models_dir(&dir)).unwrap_err();
         assert!(
-            err.contains("not allowed") || err.contains("medium"),
+            err.contains("not allowed") || err.contains("bogus"),
             "unexpected parse error: {err}"
         );
         let detail = get_job_detail(&conn, job_id).unwrap().unwrap();
         assert_eq!(detail.status, "failed");
         assert!(detail.retryable);
-        assert!(
-            detail
-                .error_message
-                .as_deref()
-                .is_some_and(|m| m.contains("medium") || m.contains("not allowed"))
-        );
+        assert!(detail
+            .error_message
+            .as_deref()
+            .is_some_and(|m| m.contains("bogus") || m.contains("not allowed")));
     }
 
     #[test]
@@ -1585,7 +1575,7 @@ mod tests {
             fail: false,
         };
         let ffmpeg = AvailableFfmpeg;
-        let models = NoopDownloader;
+
         let http = SeqTransport {
             step: AtomicUsize::new(0),
             fail: true,
@@ -1594,7 +1584,6 @@ mod tests {
             http: &http,
             whisper: &engine,
             ffmpeg: &ffmpeg,
-            models: &models,
         };
         let outcome = execute_transcription(&deps, &prepared).unwrap();
         finish_transcription(&conn, &storage, job_id, Ok(outcome)).unwrap();
@@ -1645,7 +1634,7 @@ mod tests {
             fail: false,
         };
         let ffmpeg = FailingConvert;
-        let models = NoopDownloader;
+
         let http = SeqTransport {
             step: AtomicUsize::new(0),
             fail: true,
@@ -1654,7 +1643,6 @@ mod tests {
             http: &http,
             whisper: &engine,
             ffmpeg: &ffmpeg,
-            models: &models,
         };
         let err = execute_transcription(&deps, &prepared).unwrap_err();
         assert_eq!(err, crate::domain::whisper::err_convert("bad.ogg"));
@@ -1696,7 +1684,7 @@ mod tests {
             fail: true,
         };
         let ffmpeg = AvailableFfmpeg;
-        let models = NoopDownloader;
+
         let http = SeqTransport {
             step: AtomicUsize::new(0),
             fail: true,
@@ -1705,14 +1693,13 @@ mod tests {
             http: &http,
             whisper: &engine,
             ffmpeg: &ffmpeg,
-            models: &models,
         };
         let err = execute_transcription(&deps, &prepared).unwrap_err();
         assert_eq!(err, crate::domain::whisper::err_infer(WhisperModel::Small));
     }
 
     #[test]
-    fn whisper_download_failure_uses_download_copy() {
+    fn whisper_missing_model_fails_without_download() {
         let (dir, conn, storage, audio) = setup();
         settings::update_settings(
             &conn,
@@ -1738,7 +1725,7 @@ mod tests {
         .unwrap()[0]
             .id;
         let md = models_dir(&dir);
-        // no stub file → ensure_model hits downloader
+        // no stub file → require_model fails; downloader must not run
         let prepared = prepare_transcription(&conn, job_id, &AvailableFfmpeg, &md)
             .unwrap()
             .unwrap();
@@ -1747,7 +1734,7 @@ mod tests {
             fail: true,
         };
         let ffmpeg = AvailableFfmpeg;
-        let models = NoopDownloader;
+
         let http = SeqTransport {
             step: AtomicUsize::new(0),
             fail: true,
@@ -1756,10 +1743,14 @@ mod tests {
             http: &http,
             whisper: &engine,
             ffmpeg: &ffmpeg,
-            models: &models,
         };
         let err = execute_transcription(&deps, &prepared).unwrap_err();
-        assert_eq!(err, crate::domain::whisper::err_download(WhisperModel::Base));
+        assert_eq!(
+            err,
+            crate::domain::whisper::err_not_downloaded(WhisperModel::Base)
+        );
+        assert!(!md.join("ggml-base.bin").exists());
+        assert!(!md.join("ggml-base.bin.partial").exists());
     }
 
     #[test]
@@ -1779,7 +1770,9 @@ mod tests {
             fn to_wav_16k_mono(&self, src: &Path, dest: &Path) -> Result<(), String> {
                 self.entered.wait();
                 self.list_done.wait();
-                std::fs::copy(src, dest).map(|_| ()).map_err(|e| e.to_string())
+                std::fs::copy(src, dest)
+                    .map(|_| ())
+                    .map_err(|e| e.to_string())
             }
         }
 
@@ -1827,7 +1820,7 @@ mod tests {
             text: "unlocked whisper".into(),
             fail: false,
         };
-        let models = NoopDownloader;
+
         let http = SeqTransport {
             step: AtomicUsize::new(0),
             fail: true,
@@ -1841,9 +1834,14 @@ mod tests {
                 http: &http,
                 whisper: &engine,
                 ffmpeg: &ffmpeg,
-                models: &models,
             };
-            process_transcription_job_with_lock(&db_worker, &storage_worker, &deps, &md_worker, job_id)
+            process_transcription_job_with_lock(
+                &db_worker,
+                &storage_worker,
+                &deps,
+                &md_worker,
+                job_id,
+            )
         });
 
         entered.wait();

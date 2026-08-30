@@ -14,6 +14,21 @@ pub fn err_download(model: WhisperModel) -> String {
     )
 }
 
+pub fn err_not_downloaded(model: WhisperModel) -> String {
+    format!(
+        "Whisper model `{}` ({}) is not downloaded. Open Settings, click Download for that model, then retry this job. Models are not downloaded automatically.",
+        model.as_str(),
+        model.size_label()
+    )
+}
+
+pub fn err_corrupt(model: WhisperModel) -> String {
+    format!(
+        "Whisper model `{}` on disk is corrupted. Delete it in Settings and download it again.",
+        model.as_str()
+    )
+}
+
 pub fn err_convert(filename: &str) -> String {
     format!(
         "ffmpeg could not convert `{filename}` to 16 kHz WAV. Check that the file plays in a media player and that ffmpeg is up to date, then retry."
@@ -134,6 +149,10 @@ mod tests {
         let d = err_download(WhisperModel::Base);
         assert!(d.contains("`base`"));
         assert!(d.contains("~142 MB"));
+        let missing = err_not_downloaded(WhisperModel::Small);
+        assert!(missing.contains("`small`"));
+        assert!(missing.contains("not downloaded automatically"));
+        assert!(err_corrupt(WhisperModel::MediumQ8).contains("`medium-q8`"));
         assert!(err_convert("clip.ogg").contains("`clip.ogg`"));
         assert!(err_infer(WhisperModel::Tiny).contains("`tiny`"));
     }

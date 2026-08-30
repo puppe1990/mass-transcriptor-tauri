@@ -1764,6 +1764,115 @@ button.jobs-row:hover:not(:disabled) {
   margin-top: 14px;
 }
 
+.settings-models__lede,
+.settings-models__footnote {
+  margin: 0 0 14px;
+  font-size: 13px;
+  line-height: 1.65;
+  color: var(--color-text-muted);
+}
+
+.settings-models__footnote {
+  margin: 14px 0 0;
+  font-size: 12px;
+  color: var(--color-text-faint);
+}
+
+.settings-models__warn {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  background: var(--color-danger-bg);
+  color: var(--color-danger);
+  font-size: 13px;
+}
+
+.settings-models {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+}
+
+.settings-model {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 12px 14px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border);
+  background: rgba(0, 0, 0, 0.12);
+}
+
+.settings-model--selected {
+  border-color: rgba(200, 245, 96, 0.35);
+  background: var(--color-accent-muted);
+}
+
+.settings-model__pick {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+  min-width: 0;
+}
+
+.settings-model__pick input {
+  margin-top: 4px;
+}
+
+.settings-model__copy {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.settings-model__copy strong {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.settings-model__hint {
+  font-size: 12px;
+  color: var(--color-text-muted);
+  line-height: 1.45;
+}
+
+.settings-model__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--color-text-faint);
+}
+
+.settings-model__meta .settings-status {
+  min-width: auto;
+  height: 24px;
+  padding: 0 10px;
+}
+
+.settings-model__progress {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-accent);
+}
+
+.settings-model__actions {
+  display: flex;
+  gap: 8px;
+}
+
+.settings-model__actions .btn {
+  min-height: 36px;
+  padding: 0 14px;
+  font-size: 12px;
+}
+
 .settings-form__field span {
   font-size: 13px;
   font-weight: 500;
@@ -1880,6 +1989,14 @@ button.jobs-row:hover:not(:disabled) {
 
   .settings-shell {
     grid-template-columns: 1fr;
+  }
+
+  .settings-model {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-model__actions {
+    justify-content: flex-end;
   }
 
   .page__header,
@@ -2001,6 +2118,14 @@ button.jobs-row:hover:not(:disabled) {
 
 :root[data-theme="light"] .upload-file-card {
   background: rgba(18, 25, 22, 0.025);
+}
+
+:root[data-theme="light"] .settings-model {
+  background: rgba(18, 25, 22, 0.03);
+}
+
+:root[data-theme="light"] .settings-model--selected {
+  background: var(--color-accent-muted);
 }
 
 :root[data-theme="light"] .app-control--select,

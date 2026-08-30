@@ -13,7 +13,7 @@ use domain::models::{
     AppSettings, BatchDetail, CreatedJob, JobDetail, JobSummary, NewUploadFile, UpdateSettingsInput,
 };
 use domain::whisper::WhisperRsEngine;
-use domain::whisper_models::ReqwestModelDownloader;
+use domain::whisper_models::{self, ReqwestModelDownloader, WhisperModel, WhisperModelStatus};
 use domain::{jobs, settings};
 use std::path::PathBuf;
 use tauri::image::Image;
@@ -35,6 +35,57 @@ fn update_settings(
 }
 
 #[tauri::command]
+fn list_whisper_models(state: State<'_, AppState>) -> Result<Vec<WhisperModelStatus>, String> {
+    let selected = {
+        let conn = state.db.lock();
+        settings::get_settings(&conn)?.whisper_model
+    };
+    Ok(whisper_models::list_status(&state.models_dir, &selected))
+}
+
+#[tauri::command]
+fn download_whisper_model(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<WhisperModelStatus, String> {
+    let model = WhisperModel::parse(&id)?;
+    let models_dir = state.models_dir.clone();
+    let selected = {
+        let conn = state.db.lock();
+        settings::get_settings(&conn)?.whisper_model
+    };
+    let downloader = ReqwestModelDownloader::default();
+    let model_id = model.as_str();
+    whisper_models::download_model_with_progress(&models_dir, model, &downloader, &|got, total| {
+        let _ = app.emit(
+            "whisper-model-progress",
+            serde_json::json!({
+                "id": model_id,
+                "downloadedBytes": got,
+                "totalBytes": total,
+            }),
+        );
+    })
+    .map_err(|_| domain::whisper::err_download(model))?;
+    Ok(model.status(&models_dir, &selected))
+}
+
+#[tauri::command]
+fn delete_whisper_model(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<WhisperModelStatus, String> {
+    let model = WhisperModel::parse(&id)?;
+    whisper_models::delete_model(&state.models_dir, model)?;
+    let selected = {
+        let conn = state.db.lock();
+        settings::get_settings(&conn)?.whisper_model
+    };
+    Ok(model.status(&state.models_dir, &selected))
+}
+
+#[tauri::command]
 fn create_jobs_from_paths(
     state: State<'_, AppState>,
     app: AppHandle,
@@ -53,7 +104,9 @@ fn create_jobs_from_paths(
                 .and_then(|n| n.to_str())
                 .unwrap_or("audio")
                 .to_string();
-            let size_bytes = std::fs::metadata(&path).map(|m| m.len() as i64).unwrap_or(0);
+            let size_bytes = std::fs::metadata(&path)
+                .map(|m| m.len() as i64)
+                .unwrap_or(0);
             let mime_type = mime_guess::from_path(&path)
                 .first_or_octet_stream()
                 .essence_str()
@@ -102,12 +155,10 @@ fn spawn_process_job(app: AppHandle, state: AppState, job_id: i64) {
         let transport = ReqwestTransport::default();
         let whisper = WhisperRsEngine;
         let ffmpeg = SystemFfmpeg;
-        let models = ReqwestModelDownloader::default();
         let deps = TranscriptionDeps {
             http: &transport,
             whisper: &whisper,
             ffmpeg: &ffmpeg,
-            models: &models,
         };
         let storage = state.storage();
         // Uses short DB locks only around prepare/finish — not during AssemblyAI network I/O.
@@ -154,11 +205,7 @@ fn get_batch(state: State<'_, AppState>, batch_id: i64) -> Result<Option<BatchDe
 }
 
 #[tauri::command]
-fn retry_job(
-    state: State<'_, AppState>,
-    app: AppHandle,
-    job_id: i64,
-) -> Result<JobDetail, String> {
+fn retry_job(state: State<'_, AppState>, app: AppHandle, job_id: i64) -> Result<JobDetail, String> {
     let detail = {
         let conn = state.db.lock();
         jobs::retry_job(&conn, job_id)?
@@ -210,10 +257,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            let data_dir = app
-                .path()
-                .app_data_dir()
-                .map_err(|e| e.to_string())?;
+            let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
             let state = AppState::initialize(data_dir)?;
             app.manage(state);
 
@@ -231,6 +275,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_settings,
             update_settings,
+            list_whisper_models,
+            download_whisper_model,
+            delete_whisper_model,
             create_jobs_from_paths,
             write_temp_upload,
             list_jobs,

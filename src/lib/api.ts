@@ -60,12 +60,41 @@ export type UpdateSettingsInput = {
   whisperModel: string;
 };
 
+export type WhisperModelStatus = {
+  id: string;
+  displayName: string;
+  sizeLabel: string;
+  sizeBytes: number;
+  qualityHint: string;
+  filename: string;
+  installed: boolean;
+  selected: boolean;
+};
+
+export type WhisperModelProgress = {
+  id: string;
+  downloadedBytes: number;
+  totalBytes: number | null;
+};
+
 export async function getSettings(): Promise<AppSettings> {
   return invoke("get_settings");
 }
 
 export async function updateSettings(input: UpdateSettingsInput): Promise<AppSettings> {
   return invoke("update_settings", { input });
+}
+
+export async function listWhisperModels(): Promise<WhisperModelStatus[]> {
+  return invoke("list_whisper_models");
+}
+
+export async function downloadWhisperModel(id: string): Promise<WhisperModelStatus> {
+  return invoke("download_whisper_model", { id });
+}
+
+export async function deleteWhisperModel(id: string): Promise<WhisperModelStatus> {
+  return invoke("delete_whisper_model", { id });
 }
 
 export async function listJobs(): Promise<JobSummary[]> {
