@@ -3,6 +3,8 @@
 use crate::domain::models::TranscriptionOutcome;
 use serde_json::{json, Value};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
@@ -104,6 +106,7 @@ pub struct TranscribeOptions {
     pub language: Option<String>,
     pub poll_interval: Duration,
     pub max_polls: u32,
+    pub cancelled: Option<Arc<AtomicBool>>,
 }
 
 impl Default for TranscribeOptions {
@@ -113,6 +116,7 @@ impl Default for TranscribeOptions {
             language: None,
             poll_interval: Duration::from_secs(3),
             max_polls: 60,
+            cancelled: None,
         }
     }
 }
@@ -123,6 +127,13 @@ pub fn transcribe(
     file_path: &Path,
     opts: &TranscribeOptions,
 ) -> Result<TranscriptionOutcome, String> {
+    if opts
+        .cancelled
+        .as_ref()
+        .is_some_and(|c| c.load(Ordering::SeqCst))
+    {
+        return Err("Cancelled.".into());
+    }
     let bytes = std::fs::read(file_path).map_err(|e| e.to_string())?;
     let auth = [("authorization", opts.api_key.as_str())];
 
@@ -166,6 +177,13 @@ pub fn transcribe(
         .to_string();
 
     for attempt in 1..=opts.max_polls {
+        if opts
+            .cancelled
+            .as_ref()
+            .is_some_and(|c| c.load(Ordering::SeqCst))
+        {
+            return Err("Cancelled.".into());
+        }
         let status_body = transport.get_json(
             &format!("{BASE_URL}/transcript/{transcript_id}"),
             &auth,
@@ -280,6 +298,7 @@ mod tests {
                 language: Some("en".into()),
                 poll_interval: Duration::ZERO,
                 max_polls: 5,
+                cancelled: None,
             },
         )
         .unwrap();
@@ -311,6 +330,7 @@ mod tests {
                 language: None,
                 poll_interval: Duration::ZERO,
                 max_polls: 3,
+                cancelled: None,
             },
         )
         .unwrap_err();

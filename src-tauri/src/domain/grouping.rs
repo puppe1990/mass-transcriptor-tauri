@@ -82,6 +82,9 @@ pub fn summarize_batch_status(jobs: &[JobSummary]) -> String {
     if jobs.iter().any(|j| j.status == "failed") {
         return "failed".into();
     }
+    if jobs.iter().any(|j| j.status == "cancelled") {
+        return "cancelled".into();
+    }
     if jobs.iter().any(|j| j.status == "processing") {
         return "processing".into();
     }
@@ -185,6 +188,13 @@ mod tests {
                 job(2, Some(1), "completed", "t"),
             ]),
             "completed"
+        );
+        assert_eq!(
+            summarize_batch_status(&[
+                job(1, Some(1), "completed", "t"),
+                job(2, Some(1), "cancelled", "t"),
+            ]),
+            "cancelled"
         );
     }
 

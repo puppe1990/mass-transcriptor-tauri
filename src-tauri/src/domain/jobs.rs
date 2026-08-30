@@ -13,6 +13,8 @@ use crate::domain::whisper_models::{self, RequireModelError, WhisperModel};
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 const AUDIO_EXTS: &[&str] = &[
     "wav", "mp3", "ogg", "opus", "m4a", "flac", "webm", "aac", "wma", "mpga", "oga",
@@ -41,8 +43,10 @@ pub fn is_video(filename: &str, mime_type: &str) -> bool {
     VIDEO_EXTS.contains(&extension(filename).as_str()) || mime_type.starts_with("video/")
 }
 
+pub const ERR_CANCELLED: &str = "Cancelled.";
+
 fn is_retryable(status: &str) -> bool {
-    status == "failed"
+    status == "failed" || status == "cancelled"
 }
 
 /// Create uploads + jobs (batch when multiple files). Returns created jobs.
@@ -261,6 +265,9 @@ pub fn mark_job_completed(
     outcome: &TranscriptionOutcome,
 ) -> Result<(), String> {
     let detail = get_job_detail(conn, job_id)?.ok_or_else(|| format!("Job {job_id} not found"))?;
+    if detail.status != "processing" {
+        return Ok(());
+    }
 
     let md = markdown::render(
         &outcome.text,
@@ -286,7 +293,7 @@ pub fn mark_job_completed(
     conn.execute(
         "UPDATE transcription_jobs
          SET status = 'completed', completed_at = ?1, updated_at = ?1, error_message = NULL
-         WHERE id = ?2",
+         WHERE id = ?2 AND status = 'processing'",
         params![ts, job_id],
     )
     .map_err(|e| e.to_string())?;
@@ -300,11 +307,27 @@ pub fn mark_job_failed(conn: &Connection, job_id: i64, message: &str) -> Result<
     conn.execute(
         "UPDATE transcription_jobs
          SET status = 'failed', error_message = ?1, completed_at = ?2, updated_at = ?2
-         WHERE id = ?3",
+         WHERE id = ?3 AND status NOT IN ('cancelled', 'completed')",
         params![trimmed, ts, job_id],
     )
     .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+pub fn cancel_job(conn: &Connection, job_id: i64) -> Result<JobDetail, String> {
+    let detail = get_job_detail(conn, job_id)?.ok_or_else(|| format!("Job {job_id} not found"))?;
+    if detail.status != "processing" {
+        return Err("Only a processing job can be cancelled".into());
+    }
+    let ts = now();
+    conn.execute(
+        "UPDATE transcription_jobs
+         SET status = 'cancelled', error_message = ?1, completed_at = ?2, updated_at = ?2
+         WHERE id = ?3 AND status = 'processing'",
+        params![ERR_CANCELLED, ts, job_id],
+    )
+    .map_err(|e| e.to_string())?;
+    get_job_detail(conn, job_id)?.ok_or_else(|| "Job missing after cancel".into())
 }
 
 pub fn retry_job(conn: &Connection, job_id: i64) -> Result<JobDetail, String> {
@@ -377,7 +400,7 @@ pub fn prepare_transcription(
 ) -> Result<Option<PreparedTranscription>, String> {
     let detail = get_job_detail(conn, job_id)?.ok_or_else(|| format!("Job {job_id} not found"))?;
 
-    if detail.status == "completed" {
+    if detail.status == "completed" || detail.status == "cancelled" {
         return Ok(None);
     }
 
@@ -408,6 +431,7 @@ pub fn prepare_transcription(
                     language,
                     poll_interval: std::time::Duration::from_secs(3),
                     max_polls: 60,
+                    cancelled: None,
                 },
             }))
         }
@@ -442,21 +466,32 @@ pub fn prepare_transcription(
 }
 
 /// Phase 2 (no DB): HTTP (AssemblyAI) or local Whisper — must not hold SQLite locks.
+fn cancelled(flag: Option<&Arc<AtomicBool>>) -> bool {
+    flag.map(|f| f.load(Ordering::SeqCst)).unwrap_or(false)
+}
+
 pub fn execute_transcription(
     deps: &TranscriptionDeps,
     prepared: &PreparedTranscription,
+    cancel: Option<&Arc<AtomicBool>>,
 ) -> Result<TranscriptionOutcome, String> {
+    if cancelled(cancel) {
+        return Err(ERR_CANCELLED.into());
+    }
     match prepared {
         PreparedTranscription::AssemblyAi { audio_path, opts } => {
-            assemblyai::transcribe(deps.http, Path::new(audio_path), opts)
+            let mut opts = opts.clone();
+            opts.cancelled = cancel.cloned();
+            assemblyai::transcribe(deps.http, Path::new(audio_path), &opts)
         }
-        PreparedTranscription::Whisper { .. } => execute_whisper(deps, prepared),
+        PreparedTranscription::Whisper { .. } => execute_whisper(deps, prepared, cancel),
     }
 }
 
 fn execute_whisper(
     deps: &TranscriptionDeps,
     prepared: &PreparedTranscription,
+    cancel: Option<&Arc<AtomicBool>>,
 ) -> Result<TranscriptionOutcome, String> {
     let PreparedTranscription::Whisper {
         job_id,
@@ -469,6 +504,10 @@ fn execute_whisper(
     else {
         return Err("not a whisper job".into());
     };
+
+    if cancelled(cancel) {
+        return Err(ERR_CANCELLED.into());
+    }
 
     let model_path = match whisper_models::require_model(models_dir, *model) {
         Ok(path) => path,
@@ -494,6 +533,10 @@ fn execute_whisper(
         .to_wav_16k_mono(Path::new(audio_path), &tmp)
         .map_err(|_| whisper::err_convert(original_filename))?;
 
+    if cancelled(cancel) {
+        return Err(ERR_CANCELLED.into());
+    }
+
     let opts = WhisperTranscribeOptions {
         model_path,
         language: language.clone(),
@@ -511,10 +554,20 @@ pub fn finish_transcription(
     job_id: i64,
     result: Result<TranscriptionOutcome, String>,
 ) -> Result<(), String> {
+    let status = get_job_detail(conn, job_id)?
+        .map(|d| d.status)
+        .unwrap_or_default();
+    if status == "cancelled" {
+        return Err(ERR_CANCELLED.into());
+    }
     match result {
         Ok(outcome) => {
             mark_job_completed(conn, storage, job_id, &outcome)?;
             Ok(())
+        }
+        Err(e) if e == ERR_CANCELLED => {
+            let _ = cancel_job(conn, job_id);
+            Err(e)
         }
         Err(e) => {
             mark_job_failed(conn, job_id, &e)?;
@@ -532,6 +585,7 @@ pub fn process_transcription_job_with_lock(
     deps: &TranscriptionDeps,
     models_dir: &Path,
     job_id: i64,
+    cancel: Option<Arc<AtomicBool>>,
 ) -> Result<(), String> {
     let prepared = {
         let conn = db.lock();
@@ -541,7 +595,7 @@ pub fn process_transcription_job_with_lock(
         return Ok(());
     };
     // Execute (HTTP or local Whisper): SQLite mutex is free so UI commands can run.
-    let network_result = execute_transcription(deps, &prepared);
+    let network_result = execute_transcription(deps, &prepared, cancel.as_ref());
     {
         let conn = db.lock();
         finish_transcription(&conn, storage, job_id, network_result)
@@ -561,7 +615,7 @@ pub fn process_transcription_job(
     let Some(prepared) = prepared else {
         return Ok(());
     };
-    let network_result = execute_transcription(deps, &prepared);
+    let network_result = execute_transcription(deps, &prepared, None);
     finish_transcription(conn, storage, job_id, network_result)
 }
 
@@ -1052,7 +1106,7 @@ mod tests {
             whisper: &whisper,
             ffmpeg: &ffmpeg,
         };
-        let outcome = execute_transcription(&deps, &prepared).unwrap();
+        let outcome = execute_transcription(&deps, &prepared, None).unwrap();
         finish_transcription(&conn, &storage, job_id, Ok(outcome)).unwrap();
         let detail = get_job_detail(&conn, job_id).unwrap().unwrap();
         assert_eq!(detail.status, "completed");
@@ -1189,6 +1243,7 @@ mod tests {
                 &deps,
                 &md_worker,
                 job_id,
+                None,
             )
         });
 
@@ -1317,6 +1372,118 @@ mod tests {
     }
 
     #[test]
+    fn cancel_processing_job_is_retryable() {
+        let (_dir, conn, storage, audio) = setup();
+        let job_id = create_uploads_and_jobs(
+            &conn,
+            &storage,
+            &[NewUploadFile {
+                filename: "c.wav".into(),
+                mime_type: "audio/wav".into(),
+                size_bytes: 8,
+                source_path: audio.path().to_string_lossy().into(),
+            }],
+        )
+        .unwrap()[0]
+            .id;
+        mark_job_processing(&conn, job_id).unwrap();
+        let cancelled = cancel_job(&conn, job_id).unwrap();
+        assert_eq!(cancelled.status, "cancelled");
+        assert!(cancelled.retryable);
+        assert_eq!(cancelled.error_message.as_deref(), Some(ERR_CANCELLED));
+
+        let retried = retry_job(&conn, job_id).unwrap();
+        assert_eq!(retried.status, "queued");
+    }
+
+    #[test]
+    fn cannot_cancel_queued_or_completed() {
+        let (_dir, conn, storage, audio) = setup();
+        let job_id = create_uploads_and_jobs(
+            &conn,
+            &storage,
+            &[NewUploadFile {
+                filename: "q.wav".into(),
+                mime_type: "audio/wav".into(),
+                size_bytes: 8,
+                source_path: audio.path().to_string_lossy().into(),
+            }],
+        )
+        .unwrap()[0]
+            .id;
+        let err = cancel_job(&conn, job_id).unwrap_err();
+        assert!(err.to_lowercase().contains("processing"));
+
+        mark_job_processing(&conn, job_id).unwrap();
+        mark_job_completed(
+            &conn,
+            &storage,
+            job_id,
+            &TranscriptionOutcome {
+                text: "done".into(),
+                metadata: json!({}),
+            },
+        )
+        .unwrap();
+        let err = cancel_job(&conn, job_id).unwrap_err();
+        assert!(err.to_lowercase().contains("processing"));
+    }
+
+    #[test]
+    fn finish_after_cancel_does_not_complete() {
+        let (dir, conn, storage, audio) = setup();
+        settings::update_settings(
+            &conn,
+            crate::domain::models::UpdateSettingsInput {
+                workspace_name: "Local".into(),
+                default_provider: "whisper".into(),
+                assemblyai_api_key: None,
+                language: "auto".into(),
+                whisper_model: "tiny".into(),
+            },
+        )
+        .unwrap();
+        let job_id = create_uploads_and_jobs(
+            &conn,
+            &storage,
+            &[NewUploadFile {
+                filename: "x.wav".into(),
+                mime_type: "audio/wav".into(),
+                size_bytes: 16,
+                source_path: audio.path().to_string_lossy().into(),
+            }],
+        )
+        .unwrap()[0]
+            .id;
+        let md = models_dir(&dir);
+        std::fs::write(md.join("ggml-tiny.bin"), b"stub").unwrap();
+        let prepared = prepare_transcription(&conn, job_id, &AvailableFfmpeg, &md)
+            .unwrap()
+            .unwrap();
+        cancel_job(&conn, job_id).unwrap();
+        let engine = ScriptedWhisper {
+            text: "should not persist".into(),
+            fail: false,
+        };
+        let ffmpeg = AvailableFfmpeg;
+        let http = SeqTransport {
+            step: AtomicUsize::new(0),
+            fail: true,
+        };
+        let deps = TranscriptionDeps {
+            http: &http,
+            whisper: &engine,
+            ffmpeg: &ffmpeg,
+        };
+        let outcome = execute_transcription(&deps, &prepared, None).unwrap();
+        let err = finish_transcription(&conn, &storage, job_id, Ok(outcome)).unwrap_err();
+        assert_eq!(err, ERR_CANCELLED);
+        let detail = get_job_detail(&conn, job_id).unwrap().unwrap();
+        assert_eq!(detail.status, "cancelled");
+        assert!(detail.transcript_text.is_none());
+    }
+
+    #[test]
     fn process_transcription_job_with_lock_is_production_entry() {
         let dir = tempdir().unwrap();
         let conn = db::open(&dir.path().join("prod.db")).unwrap();
@@ -1371,6 +1538,7 @@ mod tests {
             &deps,
             &dir.path().join("whisper-models"),
             job_id,
+            None,
         )
         .unwrap_err();
         assert_eq!(err, "provider boom");
@@ -1585,7 +1753,7 @@ mod tests {
             whisper: &engine,
             ffmpeg: &ffmpeg,
         };
-        let outcome = execute_transcription(&deps, &prepared).unwrap();
+        let outcome = execute_transcription(&deps, &prepared, None).unwrap();
         finish_transcription(&conn, &storage, job_id, Ok(outcome)).unwrap();
         let detail = get_job_detail(&conn, job_id).unwrap().unwrap();
         assert_eq!(detail.status, "completed");
@@ -1644,7 +1812,7 @@ mod tests {
             whisper: &engine,
             ffmpeg: &ffmpeg,
         };
-        let err = execute_transcription(&deps, &prepared).unwrap_err();
+        let err = execute_transcription(&deps, &prepared, None).unwrap_err();
         assert_eq!(err, crate::domain::whisper::err_convert("bad.ogg"));
     }
 
@@ -1694,7 +1862,7 @@ mod tests {
             whisper: &engine,
             ffmpeg: &ffmpeg,
         };
-        let err = execute_transcription(&deps, &prepared).unwrap_err();
+        let err = execute_transcription(&deps, &prepared, None).unwrap_err();
         assert_eq!(err, crate::domain::whisper::err_infer(WhisperModel::Small));
     }
 
@@ -1744,7 +1912,7 @@ mod tests {
             whisper: &engine,
             ffmpeg: &ffmpeg,
         };
-        let err = execute_transcription(&deps, &prepared).unwrap_err();
+        let err = execute_transcription(&deps, &prepared, None).unwrap_err();
         assert_eq!(
             err,
             crate::domain::whisper::err_not_downloaded(WhisperModel::Base)
@@ -1841,6 +2009,7 @@ mod tests {
                 &deps,
                 &md_worker,
                 job_id,
+                None,
             )
         });
 

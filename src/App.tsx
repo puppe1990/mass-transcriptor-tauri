@@ -6,11 +6,21 @@ import { JobPage } from "./pages/JobPage";
 import { BatchPage } from "./pages/BatchPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import type { CreatedJob } from "./lib/api";
+import { LocaleProvider, useLocale } from "./lib/LocaleContext";
 import { targetAfterUpload, targetOpenBatch, type NavigationTarget } from "./lib/navigation";
 import "./styles.css";
 
-/** Client-side navigation only — no auth routes or redirects. */
 export default function App() {
+  return (
+    <LocaleProvider>
+      <AppShell />
+    </LocaleProvider>
+  );
+}
+
+/** Client-side navigation only — no auth routes or redirects. */
+function AppShell() {
+  const { t } = useLocale();
   const [route, setRoute] = useState<Route>("upload");
   const [jobId, setJobId] = useState<number | null>(null);
   const [batchId, setBatchId] = useState<number | null>(null);
@@ -79,10 +89,10 @@ export default function App() {
       {route === "batch" && batchId == null && (
         <section className="page">
           <div className="page-alert" role="alert">
-            Batch not found. Open it again from Jobs.
+            {t("batch.notFound")}
           </div>
           <button type="button" className="btn btn--primary" onClick={() => navigate("jobs")}>
-            View jobs
+            {t("batch.viewJobs")}
           </button>
         </section>
       )}

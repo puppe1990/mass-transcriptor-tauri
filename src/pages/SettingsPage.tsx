@@ -11,6 +11,7 @@ import {
   type WhisperModelProgress,
   type WhisperModelStatus,
 } from "../lib/api";
+import { useLocale } from "../lib/LocaleContext";
 
 function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
@@ -20,6 +21,7 @@ function formatBytes(n: number): string {
 }
 
 export function SettingsPage() {
+  const { t } = useLocale();
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [workspaceName, setWorkspaceName] = useState("");
   const [defaultProvider, setDefaultProvider] = useState("assemblyai");
@@ -70,12 +72,18 @@ export function SettingsPage() {
     setBusy(true);
     setMessage(null);
     setError(null);
+    const chosen = catalog.find((m) => m.id === whisperModel && m.installed);
+    if (defaultProvider === "whisper" && !chosen) {
+      setBusy(false);
+      setError(t("settings.cannotSave"));
+      return;
+    }
     try {
       const input: UpdateSettingsInput = {
         workspaceName,
         defaultProvider,
         language,
-        whisperModel,
+        whisperModel: chosen?.id ?? settings?.whisperModel ?? whisperModel,
       };
       if (apiKey.trim() !== "") {
         input.assemblyaiApiKey = apiKey.trim();
@@ -84,7 +92,7 @@ export function SettingsPage() {
       setSettings(updated);
       setWhisperModel(updated.whisperModel);
       setApiKey("");
-      setMessage("Settings saved.");
+      setMessage(t("settings.saved"));
       await refreshCatalog();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -101,7 +109,7 @@ export function SettingsPage() {
     try {
       const row = await downloadWhisperModel(id);
       await refreshCatalog();
-      setMessage(`Downloaded ${row.displayName} (${row.sizeLabel}). Select it and save to use it on Whisper jobs.`);
+      setMessage(t("settings.downloaded", { name: row.displayName, size: row.sizeLabel }));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -116,8 +124,13 @@ export function SettingsPage() {
     setMessage(null);
     try {
       await deleteWhisperModel(id);
-      await refreshCatalog();
-      setMessage(`Removed ${id} from this machine.`);
+      const nextCatalog = await listWhisperModels();
+      setCatalog(nextCatalog);
+      if (whisperModel === id) {
+        const fallback = nextCatalog.find((m) => m.installed);
+        setWhisperModel(fallback?.id ?? "");
+      }
+      setMessage(t("settings.removed", { id }));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -125,88 +138,66 @@ export function SettingsPage() {
     }
   }
 
-  const selectedRow = catalog.find((m) => m.id === whisperModel);
-  const selectedMissing = Boolean(selectedRow && !selectedRow.installed);
+  const selectionInstalled = catalog.some((m) => m.id === whisperModel && m.installed);
+  const whisperBlocked = defaultProvider === "whisper" && !selectionInstalled;
 
   return (
     <section className="settings-shell" id="settings-page">
       <div className="settings-shell__intro">
-        <p className="settings-shell__eyebrow">Workspace controls</p>
-        <h1>Provider Settings</h1>
-        <p className="settings-shell__lede">
-          Choose which engine runs each transcript and keep external credentials scoped to this
-          machine only.
-        </p>
+        <p className="settings-shell__eyebrow">{t("settings.eyebrow")}</p>
+        <h1>{t("settings.title")}</h1>
+        <p className="settings-shell__lede">{t("settings.lede")}</p>
 
         <div className="settings-shell__note">
-          <p className="settings-shell__label">Workspace</p>
+          <p className="settings-shell__label">{t("settings.workspace")}</p>
           <strong>{settings?.workspaceName ?? "Local"}</strong>
-          <p>Local desktop app · no multi-user login</p>
-          <p>AssemblyAI uses the API key stored in local SQLite settings.</p>
-          <p>Whisper is local and does not use that key. Models stay on disk until you delete them.</p>
+          <p>{t("settings.workspaceHint")}</p>
+          <p>{t("settings.assemblyNote")}</p>
+          <p>{t("settings.whisperNote")}</p>
         </div>
       </div>
 
       <div className="settings-card">
         <form id="settings-form" onSubmit={save}>
           <section className="settings-form__section">
-            <p className="settings-shell__label">Workspace</p>
+            <p className="settings-shell__label">{t("settings.provider")}</p>
             <label className="settings-form__field">
-              <span>Workspace</span>
-              <input
-                id="settings-workspace"
-                type="text"
-                value={workspaceName}
-                onChange={(e) => setWorkspaceName(e.target.value)}
-                placeholder="Your workspace"
-                aria-label="Workspace name"
-                required
-              />
-            </label>
-          </section>
-
-          <section className="settings-form__section">
-            <p className="settings-shell__label">Provider</p>
-            <label className="settings-form__field">
-              <span>Default provider</span>
+              <span>{t("settings.defaultProvider")}</span>
               <select
                 id="settings-provider"
                 value={defaultProvider}
                 onChange={(e) => setDefaultProvider(e.target.value)}
-                aria-label="Default provider"
+                aria-label={t("settings.defaultProvider")}
               >
                 <option value="assemblyai">assemblyai</option>
                 <option value="whisper">whisper</option>
               </select>
             </label>
             <label className="settings-form__field">
-              <span>Transcription language</span>
+              <span>{t("settings.transcriptionLanguage")}</span>
               <select
                 id="settings-language"
                 value={language}
                 onChange={(e) => setLanguage(e.target.value)}
-                aria-label="Transcription language"
+                aria-label={t("settings.transcriptionLanguage")}
               >
-                <option value="auto">Auto detect</option>
-                <option value="pt">Portuguese</option>
-                <option value="en">English</option>
-                <option value="es">Spanish</option>
+                <option value="auto">{t("settings.langAuto")}</option>
+                <option value="pt">{t("settings.langPt")}</option>
+                <option value="en">{t("settings.langEn")}</option>
+                <option value="es">{t("settings.langEs")}</option>
               </select>
             </label>
           </section>
 
           <section className="settings-form__section" id="settings-whisper-models">
-            <p className="settings-shell__label">Local Whisper models</p>
-            <p className="settings-models__lede">
-              Download only the sizes you want. Nothing is fetched until you click Download. Whisper
-              jobs fail until the selected model is on disk.
-            </p>
-            {selectedMissing && defaultProvider === "whisper" && (
+            <p className="settings-shell__label">{t("settings.models")}</p>
+            <p className="settings-models__lede">{t("settings.modelsLede")}</p>
+            {whisperBlocked && (
               <p className="settings-models__warn" role="status">
-                Selected model `{whisperModel}` is not downloaded yet.
+                {t("settings.cannotSave")}
               </p>
             )}
-            <ul className="settings-models" aria-label="Whisper models">
+            <ul className="settings-models" aria-label={t("settings.models")}>
               {catalog.map((model) => {
                 const isDownloading = downloadingId === model.id;
                 const prog = isDownloading ? progress : null;
@@ -217,20 +208,29 @@ export function SettingsPage() {
                 return (
                   <li
                     key={model.id}
-                    className={
-                      whisperModel === model.id
-                        ? "settings-model settings-model--selected"
-                        : "settings-model"
-                    }
+                    className={[
+                      "settings-model",
+                      model.installed && whisperModel === model.id && "settings-model--selected",
+                      !model.installed && "settings-model--unavailable",
+                    ]
+                      .filter(Boolean)
+                      .join(" ")}
                   >
                     <label className="settings-model__pick">
                       <input
                         type="radio"
                         name="whisper-model"
                         value={model.id}
-                        checked={whisperModel === model.id}
-                        onChange={() => setWhisperModel(model.id)}
-                        aria-label={`Use ${model.displayName}`}
+                        checked={model.installed && whisperModel === model.id}
+                        disabled={!model.installed}
+                        onChange={() => {
+                          if (model.installed) setWhisperModel(model.id);
+                        }}
+                        aria-label={
+                          model.installed
+                            ? `Use ${model.displayName}`
+                            : t("settings.cannotSelect")
+                        }
                       />
                       <span className="settings-model__copy">
                         <strong>{model.displayName}</strong>
@@ -244,17 +244,24 @@ export function SettingsPage() {
                                 : "settings-status settings-status--missing"
                             }
                           >
-                            {model.installed ? "On disk" : "Not downloaded"}
+                            {model.installed ? t("settings.onDisk") : t("settings.notDownloaded")}
                           </span>
                         </span>
                         {isDownloading && (
-                          <span className="settings-model__progress" aria-live="polite">
-                            {pct != null
-                              ? `Downloading ${pct}%`
-                              : prog
-                                ? `Downloading ${formatBytes(prog.downloadedBytes)}`
-                                : "Downloading…"}
-                          </span>
+                          <>
+                            <span className="settings-model__progress" aria-live="polite">
+                              {pct != null
+                                ? t("settings.downloadingPct", { pct })
+                                : prog
+                                  ? t("settings.downloadingBytes", {
+                                      bytes: formatBytes(prog.downloadedBytes),
+                                    })
+                                  : t("settings.downloading")}
+                            </span>
+                            <span className="settings-model__bar" aria-hidden="true">
+                              <i style={{ width: pct != null ? `${pct}%` : "28%" }} />
+                            </span>
+                          </>
                         )}
                       </span>
                     </label>
@@ -267,7 +274,7 @@ export function SettingsPage() {
                           disabled={Boolean(downloadingId) || deletingId === model.id}
                           onClick={() => void handleDelete(model.id)}
                         >
-                          {deletingId === model.id ? "Removing…" : "Remove"}
+                          {deletingId === model.id ? t("settings.removing") : t("settings.remove")}
                         </button>
                       ) : (
                         <button
@@ -277,7 +284,7 @@ export function SettingsPage() {
                           disabled={Boolean(downloadingId)}
                           onClick={() => void handleDownload(model.id)}
                         >
-                          {isDownloading ? "Downloading…" : "Download"}
+                          {isDownloading ? t("settings.downloading") : t("settings.download")}
                         </button>
                       )}
                     </div>
@@ -285,17 +292,13 @@ export function SettingsPage() {
                 );
               })}
             </ul>
-            <p className="settings-models__footnote">
-              Files come from Hugging Face (<code>ggerganov/whisper.cpp</code>). Handy models such as
-              Nemotron, Parakeet, Voxtral, Qwen3-ASR, Fun-ASR, and Cohere Transcribe need
-              transcribe.cpp, which this app does not run.
-            </p>
+            <p className="settings-models__footnote">{t("settings.modelsFootnote")}</p>
           </section>
 
           <section className="settings-form__section">
-            <p className="settings-shell__label">Credentials</p>
+            <p className="settings-shell__label">{t("settings.credentials")}</p>
             <div className="settings-form__status-row">
-              <span className="settings-shell__label">AssemblyAI API key</span>
+              <span className="settings-shell__label">{t("settings.apiKey")}</span>
               <span
                 className={
                   settings?.hasApiKey
@@ -303,28 +306,31 @@ export function SettingsPage() {
                     : "settings-status settings-status--missing"
                 }
               >
-                {settings?.hasApiKey ? "Configured" : "Not set"}
+                {settings?.hasApiKey ? t("settings.configured") : t("settings.notSet")}
               </span>
             </div>
             <label className="settings-form__field">
-              <span>API key</span>
+              <span>{t("settings.apiKeyLabel")}</span>
               <input
                 id="settings-api-key"
                 type="text"
                 autoComplete="off"
                 spellCheck={false}
-                placeholder={
-                  settings?.hasApiKey ? "•••••••• (leave blank to keep)" : "Enter API key"
-                }
+                placeholder={settings?.hasApiKey ? t("settings.keepKey") : t("settings.enterKey")}
                 value={apiKey}
                 onChange={(e) => setApiKey(e.target.value)}
-                aria-label="AssemblyAI API key"
+                aria-label={t("settings.apiKey")}
               />
             </label>
           </section>
 
-          <button type="submit" className="btn btn--primary" id="settings-save" disabled={busy}>
-            {busy ? "Saving…" : "Save settings"}
+          <button
+            type="submit"
+            className="btn btn--primary"
+            id="settings-save"
+            disabled={busy || whisperBlocked}
+          >
+            {busy ? t("settings.saving") : t("settings.save")}
           </button>
         </form>
 

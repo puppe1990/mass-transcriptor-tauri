@@ -163,6 +163,28 @@ impl WhisperModel {
     }
 }
 
+/// Persist a model choice only if the ggml file is already on disk.
+/// AssemblyAI may keep an existing undownloaded id so other settings still save.
+pub fn assert_can_persist_model(
+    model: WhisperModel,
+    provider: &str,
+    existing_model: &str,
+    models_dir: &Path,
+) -> Result<(), String> {
+    if model.is_installed(models_dir) {
+        return Ok(());
+    }
+    let keeping_existing = model.as_str() == existing_model;
+    if provider != "whisper" && keeping_existing {
+        return Ok(());
+    }
+    Err(format!(
+        "Download Whisper model `{}` ({}) before selecting it. It cannot be saved until the file is on disk.",
+        model.as_str(),
+        model.size_label()
+    ))
+}
+
 pub fn list_status(models_dir: &Path, selected: &str) -> Vec<WhisperModelStatus> {
     WhisperModel::ALL
         .into_iter()
@@ -402,6 +424,36 @@ mod tests {
             "ggml-large-v3-turbo-q8_0.bin"
         );
         assert_eq!(WhisperModel::LargeV3Q5.filename(), "ggml-large-v3-q5_0.bin");
+    }
+
+    #[test]
+    fn persist_rejects_missing_model_for_whisper() {
+        let dir = tempdir().unwrap();
+        let err = assert_can_persist_model(WhisperModel::Base, "whisper", "base", dir.path())
+            .unwrap_err();
+        assert!(err.contains("before selecting"));
+        assert!(err.contains("`base`"));
+    }
+
+    #[test]
+    fn persist_allows_assemblyai_to_keep_existing_missing_model() {
+        let dir = tempdir().unwrap();
+        assert_can_persist_model(WhisperModel::Base, "assemblyai", "base", dir.path()).unwrap();
+    }
+
+    #[test]
+    fn persist_rejects_switching_to_another_missing_model() {
+        let dir = tempdir().unwrap();
+        let err = assert_can_persist_model(WhisperModel::Small, "assemblyai", "base", dir.path())
+            .unwrap_err();
+        assert!(err.contains("`small`"));
+    }
+
+    #[test]
+    fn persist_allows_installed_model() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("ggml-tiny.bin"), b"stub").unwrap();
+        assert_can_persist_model(WhisperModel::Tiny, "whisper", "base", dir.path()).unwrap();
     }
 
     #[test]

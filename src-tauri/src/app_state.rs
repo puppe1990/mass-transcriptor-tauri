@@ -4,7 +4,9 @@ use crate::db;
 use crate::domain::storage::StorageRoot;
 use parking_lot::Mutex;
 use rusqlite::Connection;
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -14,6 +16,7 @@ pub struct AppState {
     pub models_dir: PathBuf,
     /// Serializes SQLite access (rusqlite Connection is not Sync across threads easily).
     pub db: Arc<Mutex<Connection>>,
+    cancels: Arc<Mutex<HashMap<i64, Arc<AtomicBool>>>>,
 }
 
 impl AppState {
@@ -31,10 +34,27 @@ impl AppState {
             storage_root,
             models_dir,
             db: Arc::new(Mutex::new(conn)),
+            cancels: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
     pub fn storage(&self) -> StorageRoot {
         StorageRoot::new(self.storage_root.clone())
+    }
+
+    pub fn cancel_flag(&self, job_id: i64) -> Arc<AtomicBool> {
+        self.cancels
+            .lock()
+            .entry(job_id)
+            .or_insert_with(|| Arc::new(AtomicBool::new(false)))
+            .clone()
+    }
+
+    pub fn request_cancel(&self, job_id: i64) {
+        self.cancel_flag(job_id).store(true, Ordering::SeqCst);
+    }
+
+    pub fn clear_cancel(&self, job_id: i64) {
+        self.cancels.lock().remove(&job_id);
     }
 }
