@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
+  cancelJob,
   downloadBatchTranscriptsZip,
   getBatch,
   getTranscriptMarkdown,
@@ -10,6 +11,7 @@ import {
 } from "../lib/api";
 import { JobStatusBadge } from "../components/JobStatusBadge";
 import { IconChevronLeft } from "../components/icons";
+import { useLocale } from "../lib/LocaleContext";
 
 type Props = {
   batchId: number;
@@ -18,6 +20,7 @@ type Props = {
 };
 
 export function BatchPage({ batchId, onBack, onOpenJob }: Props) {
+  const { t } = useLocale();
   const [batch, setBatch] = useState<BatchDetail | null>(null);
   const [activeJobId, setActiveJobId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -76,6 +79,18 @@ export function BatchPage({ batchId, onBack, onOpenJob }: Props) {
     }
   }
 
+  async function handleCancel(jobId: number) {
+    setBusyId(jobId);
+    try {
+      await cancelJob(jobId);
+      await refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusyId(null);
+    }
+  }
+
   async function handleDownloadOne(job: JobDetail) {
     try {
       const md = await getTranscriptMarkdown(job.id);
@@ -126,7 +141,7 @@ export function BatchPage({ batchId, onBack, onOpenJob }: Props) {
   if (!batch && !error) {
     return (
       <section className="page">
-        <p className="page__subtitle">Loading…</p>
+        <p className="page__subtitle">{t("job.loading")}</p>
       </section>
     );
   }
@@ -137,11 +152,11 @@ export function BatchPage({ batchId, onBack, onOpenJob }: Props) {
         <header className="page__header">
           <button type="button" className="page__back" onClick={onBack}>
             <IconChevronLeft />
-            Back to jobs
+            {t("job.back")}
           </button>
         </header>
         <div className="page-alert" role="alert">
-          {error || "Batch not found"}
+          {error || t("batch.notFound")}
         </div>
       </section>
     );
@@ -152,10 +167,10 @@ export function BatchPage({ batchId, onBack, onOpenJob }: Props) {
       <header className="page__header">
         <button type="button" className="page__back" onClick={onBack}>
           <IconChevronLeft />
-          Back to jobs
+          {t("job.back")}
         </button>
-        <h1 className="page__title">Upload group · {batch.jobs.length} audios</h1>
-        <p className="page__subtitle">Each file is listed below — switch tabs to review separately</p>
+        <h1 className="page__title">{t("batch.title", { count: batch.jobs.length })}</h1>
+        <p className="page__subtitle">{t("batch.subtitle")}</p>
         {canDownloadAll && (
           <div className="page__actions">
             <button
@@ -165,7 +180,7 @@ export function BatchPage({ batchId, onBack, onOpenJob }: Props) {
               disabled={downloadBusy}
               onClick={() => void handleDownloadAll()}
             >
-              {downloadBusy ? "Preparing…" : "Download all"}
+              {downloadBusy ? t("batch.preparing") : t("batch.downloadAll")}
             </button>
           </div>
         )}
@@ -178,7 +193,7 @@ export function BatchPage({ batchId, onBack, onOpenJob }: Props) {
           </div>
         )}
 
-        <div className="job-batch-tabs" role="tablist" aria-label="Batch files" id="batch-jobs-list">
+        <div className="job-batch-tabs" role="tablist" aria-label={t("batch.tabs")} id="batch-jobs-list">
           {batch.jobs.map((job) => (
             <button
               type="button"
@@ -208,22 +223,22 @@ export function BatchPage({ batchId, onBack, onOpenJob }: Props) {
           >
             <div className="job-meta" id={`job-meta-${activeJob.id}`}>
               <div className="job-meta__item">
-                <p className="job-meta__label">File</p>
+                <p className="job-meta__label">{t("job.file")}</p>
                 <p className="job-meta__value">{activeJob.originalFilename}</p>
               </div>
               <div className="job-meta__item">
-                <p className="job-meta__label">Provider</p>
+                <p className="job-meta__label">{t("job.provider")}</p>
                 <p className="job-meta__value">{activeJob.providerKey}</p>
               </div>
               <div className="job-meta__item">
-                <p className="job-meta__label">Status</p>
+                <p className="job-meta__label">{t("job.status")}</p>
                 <p className="job-meta__value">
                   <JobStatusBadge status={activeJob.status} />
                 </p>
               </div>
               {activeJob.markdownPath && (
                 <div className="job-meta__item">
-                  <p className="job-meta__label">Output</p>
+                  <p className="job-meta__label">{t("job.output")}</p>
                   <p className="job-meta__value job-meta__value--muted">
                     {activeJob.markdownPath}
                   </p>
@@ -238,6 +253,16 @@ export function BatchPage({ batchId, onBack, onOpenJob }: Props) {
             )}
 
             <div className="job-actions" id={`job-actions-${activeJob.id}`}>
+              {activeJob.status === "processing" && (
+                <button
+                  type="button"
+                  className="btn btn--ghost"
+                  disabled={busyId === activeJob.id}
+                  onClick={() => void handleCancel(activeJob.id)}
+                >
+                  {busyId === activeJob.id ? t("job.cancelling") : t("job.cancel")}
+                </button>
+              )}
               {activeJob.retryable && (
                 <button
                   type="button"
@@ -245,7 +270,7 @@ export function BatchPage({ batchId, onBack, onOpenJob }: Props) {
                   disabled={busyId === activeJob.id}
                   onClick={() => void handleRetry(activeJob.id)}
                 >
-                  {busyId === activeJob.id ? "Retrying..." : "Retry job"}
+                  {busyId === activeJob.id ? t("job.retrying") : t("job.retry")}
                 </button>
               )}
               {activeJob.status === "completed" && activeJob.markdownPath && (
@@ -254,7 +279,7 @@ export function BatchPage({ batchId, onBack, onOpenJob }: Props) {
                   className="btn btn--primary"
                   onClick={() => void handleDownloadOne(activeJob)}
                 >
-                  Download markdown
+                  {t("job.downloadMd")}
                 </button>
               )}
               <button
@@ -262,27 +287,27 @@ export function BatchPage({ batchId, onBack, onOpenJob }: Props) {
                 className="btn btn--ghost"
                 onClick={() => onOpenJob(activeJob.id)}
               >
-                Open full page
+                {t("batch.openFull")}
               </button>
             </div>
 
             {!activeJob.transcriptText ? (
-              <p className="transcript-preview__empty">No transcript yet.</p>
+              <p className="transcript-preview__empty">{t("job.empty")}</p>
             ) : (
               <section className="transcript-preview">
                 <div className="transcript-preview__header">
-                  <h2>Transcript</h2>
+                  <h2>{t("job.manuscript")}</h2>
                   <button
                     type="button"
                     className="transcript-preview__copy"
                     onClick={() => void handleCopy(activeJob.transcriptText!)}
                   >
-                    {copyState === "copied" ? "Copied" : "Copy Text"}
+                    {copyState === "copied" ? t("job.copied") : t("job.copy")}
                   </button>
                 </div>
                 {copyState === "failed" && (
                   <p className="transcript-preview__status" role="status">
-                    Could not copy text.
+                    {t("job.copyFailed")}
                   </p>
                 )}
                 <pre>{activeJob.transcriptText}</pre>

@@ -128,6 +128,10 @@ export async function retryJob(jobId: number): Promise<JobDetail> {
   return invoke("retry_job", { jobId });
 }
 
+export async function cancelJob(jobId: number): Promise<JobDetail> {
+  return invoke("cancel_job", { jobId });
+}
+
 export async function getTranscriptMarkdown(jobId: number): Promise<string> {
   return invoke("get_transcript_markdown", { jobId });
 }

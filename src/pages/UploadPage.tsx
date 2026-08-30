@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState, type DragEvent } from "react";
 import { createJobsFromPaths, pickAudioFiles, type CreatedJob } from "../lib/api";
 import { IconAlert, IconCheck, IconUploadTray } from "../components/icons";
+import { useLocale } from "../lib/LocaleContext";
 
 type Props = {
   onCreated: (jobs: CreatedJob[]) => void;
@@ -15,6 +16,7 @@ function filterMediaPaths(paths: string[]): string[] {
 }
 
 export function UploadPage({ onCreated, onOpenJobs }: Props) {
+  const { t } = useLocale();
   const [busy, setBusy] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -24,9 +26,7 @@ export function UploadPage({ onCreated, onOpenJobs }: Props) {
     async (paths: string[]) => {
       const media = filterMediaPaths(paths);
       if (media.length === 0) {
-        setError(
-          "This file type is not supported. Use common audio formats or MP4, MOV, WebM, and MKV video.",
-        );
+        setError(t("upload.unsupportedType"));
         return;
       }
       setError(null);
@@ -41,7 +41,7 @@ export function UploadPage({ onCreated, onOpenJobs }: Props) {
         setBusy(false);
       }
     },
-    [onCreated],
+    [onCreated, t],
   );
 
   // Native Tauri drag-and-drop (gives real filesystem paths — required on desktop).
@@ -140,11 +140,7 @@ export function UploadPage({ onCreated, onOpenJobs }: Props) {
       }
       await uploadPaths(tempPaths);
     } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : "Drop failed. Use Browse files, or drop files while the app window is focused.",
-      );
+      setError(err instanceof Error ? err.message : t("upload.dropFailed"));
     } finally {
       setBusy(false);
     }
@@ -153,12 +149,9 @@ export function UploadPage({ onCreated, onOpenJobs }: Props) {
   return (
     <section className="page" id="upload-page">
       <header className="page__header">
-        <p className="page__eyebrow">Local</p>
-        <h1 className="page__title">Upload Audio or Video</h1>
-        <p className="page__subtitle">
-          Drop audio or short video files here. Files are transcribed with the default
-          provider from Settings.
-        </p>
+        <p className="page__eyebrow">{t("upload.eyebrow")}</p>
+        <h1 className="page__title">{t("upload.title")}</h1>
+        <p className="page__subtitle">{t("upload.subtitle")}</p>
         <div className="page__actions">
           <a
             href="#jobs"
@@ -167,7 +160,7 @@ export function UploadPage({ onCreated, onOpenJobs }: Props) {
               onOpenJobs();
             }}
           >
-            View jobs
+            {t("upload.viewJobs")}
           </a>
         </div>
       </header>
@@ -181,8 +174,8 @@ export function UploadPage({ onCreated, onOpenJobs }: Props) {
             <div className="upload-success__content">
               <strong>
                 {last.length === 1
-                  ? "1 job queued for transcription."
-                  : `${last.length} jobs queued for transcription.`}
+                  ? t("upload.queuedOne")
+                  : t("upload.queuedMany", { count: last.length })}
               </strong>
               <p className="upload-success__links">
                 {last[0]?.batchId != null ? (
@@ -193,13 +186,13 @@ export function UploadPage({ onCreated, onOpenJobs }: Props) {
                       onCreated(last);
                     }}
                   >
-                    Open upload group
+                    {t("upload.openGroup")}
                   </a>
                 ) : (
                   last.map((j, i) => (
                     <span key={j.id}>
                       {i > 0 ? ", " : null}
-                      Job #{j.id}
+                      {t("upload.jobLabel", { id: j.id })}
                     </span>
                   ))
                 )}
@@ -227,13 +220,9 @@ export function UploadPage({ onCreated, onOpenJobs }: Props) {
               <IconUploadTray />
             </div>
             <p className="upload-dropzone__title">
-              {dragging
-                ? "Drop files to queue transcription"
-                : "Drag and drop audio or video files here"}
+              {dragging ? t("upload.dropActive") : t("upload.dropIdle")}
             </p>
-            <p className="upload-dropzone__hint">
-              MP3, WAV, OGG, M4A, FLAC or MP4, MOV, WebM, MKV · up to 20 files
-            </p>
+            <p className="upload-dropzone__hint">{t("upload.formats")}</p>
             <button
               type="button"
               className="btn btn--primary upload-dropzone__browse"
@@ -241,7 +230,7 @@ export function UploadPage({ onCreated, onOpenJobs }: Props) {
               disabled={busy}
               onClick={() => void handlePick()}
             >
-              {busy ? "Creating jobs…" : "Browse files"}
+              {busy ? t("upload.creating") : t("upload.browse")}
             </button>
           </div>
 
@@ -249,7 +238,7 @@ export function UploadPage({ onCreated, onOpenJobs }: Props) {
             <div id="upload-error" className="upload-error upload-error--banner" role="alert">
               <IconAlert className="size-5 shrink-0" />
               <div>
-                <strong>Cannot upload this file</strong>
+                <strong>{t("upload.cannotUpload")}</strong>
                 <p>{error}</p>
               </div>
             </div>

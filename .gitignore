@@ -33,6 +33,9 @@ dist-ssr
 storage/
 data/
 
+# Playwright local captures
+.playwright-cli/
+
 # Editor
 .vscode/*
 !.vscode/extensions.json

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useLocale } from "../lib/LocaleContext";
 import { IconMoon, IconSun } from "./icons";
 
 type Theme = "dark" | "light";
@@ -15,6 +16,7 @@ function applyTheme(theme: Theme) {
 }
 
 export function ThemeToggle() {
+  const { t } = useLocale();
   const [theme, setTheme] = useState<Theme>(() => readTheme());
 
   useEffect(() => {
@@ -22,14 +24,14 @@ export function ThemeToggle() {
   }, [theme]);
 
   const next = theme === "dark" ? "light" : "dark";
-  const label = theme === "dark" ? "Light mode" : "Dark mode";
+  const label = theme === "dark" ? t("theme.light") : t("theme.dark");
 
   return (
     <button
       type="button"
       id="theme-toggle"
       className="theme-toggle btn--ghost"
-      aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+      aria-label={theme === "dark" ? t("theme.switchToLight") : t("theme.switchToDark")}
       onClick={() => setTheme(next)}
     >
       <span aria-hidden="true">{theme === "dark" ? <IconMoon /> : <IconSun />}</span>

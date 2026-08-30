@@ -30,6 +30,18 @@ fn update_settings(
     state: State<'_, AppState>,
     input: UpdateSettingsInput,
 ) -> Result<AppSettings, String> {
+    let model = WhisperModel::parse(&input.whisper_model)?;
+    let provider = input.default_provider.trim().to_lowercase();
+    let existing = {
+        let conn = state.db.lock();
+        settings::get_settings(&conn)?
+    };
+    whisper_models::assert_can_persist_model(
+        model,
+        &provider,
+        &existing.whisper_model,
+        &state.models_dir,
+    )?;
     let conn = state.db.lock();
     settings::update_settings(&conn, input)
 }
@@ -162,13 +174,17 @@ fn spawn_process_job(app: AppHandle, state: AppState, job_id: i64) {
         };
         let storage = state.storage();
         // Uses short DB locks only around prepare/finish — not during AssemblyAI network I/O.
+        let cancel = state.cancel_flag(job_id);
+        cancel.store(false, std::sync::atomic::Ordering::SeqCst);
         let result = jobs::process_transcription_job_with_lock(
             &state.db,
             &storage,
             &deps,
             &state.models_dir,
             job_id,
+            Some(cancel),
         );
+        state.clear_cancel(job_id);
         let _ = app.emit(
             "job-updated",
             serde_json::json!({
@@ -206,11 +222,34 @@ fn get_batch(state: State<'_, AppState>, batch_id: i64) -> Result<Option<BatchDe
 
 #[tauri::command]
 fn retry_job(state: State<'_, AppState>, app: AppHandle, job_id: i64) -> Result<JobDetail, String> {
+    state.clear_cancel(job_id);
     let detail = {
         let conn = state.db.lock();
         jobs::retry_job(&conn, job_id)?
     };
     spawn_process_job(app, state.inner().clone(), job_id);
+    Ok(detail)
+}
+
+#[tauri::command]
+fn cancel_job(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    job_id: i64,
+) -> Result<JobDetail, String> {
+    state.request_cancel(job_id);
+    let detail = {
+        let conn = state.db.lock();
+        jobs::cancel_job(&conn, job_id)?
+    };
+    let _ = app.emit(
+        "job-updated",
+        serde_json::json!({
+            "jobId": job_id,
+            "ok": false,
+            "error": jobs::ERR_CANCELLED,
+        }),
+    );
     Ok(detail)
 }
 
@@ -285,6 +324,7 @@ pub fn run() {
             get_job,
             get_batch,
             retry_job,
+            cancel_job,
             get_transcript_markdown,
             list_batch_transcripts,
             download_batch_transcripts_zip,

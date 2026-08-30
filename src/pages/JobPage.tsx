@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
+  cancelJob,
   getJob,
   getTranscriptMarkdown,
   retryJob,
@@ -8,6 +9,7 @@ import {
 } from "../lib/api";
 import { JobStatusBadge } from "../components/JobStatusBadge";
 import { IconChevronLeft } from "../components/icons";
+import { useLocale } from "../lib/LocaleContext";
 
 type Props = {
   jobId: number;
@@ -16,6 +18,7 @@ type Props = {
 };
 
 export function JobPage({ jobId, onBack, onOpenBatch }: Props) {
+  const { t } = useLocale();
   const [job, setJob] = useState<JobDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -59,6 +62,18 @@ export function JobPage({ jobId, onBack, onOpenBatch }: Props) {
     }
   }
 
+  async function handleCancel() {
+    setBusy(true);
+    try {
+      await cancelJob(jobId);
+      await refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function handleDownload() {
     try {
       const md = await getTranscriptMarkdown(jobId);
@@ -91,7 +106,7 @@ export function JobPage({ jobId, onBack, onOpenBatch }: Props) {
   if (!job && !error) {
     return (
       <section className="page">
-        <p className="page__subtitle">Loading…</p>
+        <p className="page__subtitle">{t("job.loading")}</p>
       </section>
     );
   }
@@ -102,11 +117,11 @@ export function JobPage({ jobId, onBack, onOpenBatch }: Props) {
         <header className="page__header">
           <button type="button" className="page__back" onClick={onBack}>
             <IconChevronLeft />
-            Back to jobs
+            {t("job.back")}
           </button>
         </header>
         <div className="page-alert" role="alert">
-          {error || "Job not found"}
+          {error || t("job.notFound")}
         </div>
       </section>
     );
@@ -117,7 +132,7 @@ export function JobPage({ jobId, onBack, onOpenBatch }: Props) {
       <header className="page__header">
         <button type="button" className="page__back" id="job-back" onClick={onBack}>
           <IconChevronLeft />
-          Back to jobs
+          {t("job.back")}
         </button>
         <h1 className="page__title">{job.originalFilename}</h1>
         {job.batchId != null && (
@@ -129,7 +144,7 @@ export function JobPage({ jobId, onBack, onOpenBatch }: Props) {
                 onOpenBatch(job.batchId!);
               }}
             >
-              Batch #{job.batchId}
+              {t("job.batch", { id: job.batchId })}
             </a>
           </div>
         )}
@@ -144,18 +159,18 @@ export function JobPage({ jobId, onBack, onOpenBatch }: Props) {
 
         <div className="job-meta" id={`job-meta-${job.id}`}>
           <div className="job-meta__item">
-            <p className="job-meta__label">Provider</p>
+            <p className="job-meta__label">{t("job.provider")}</p>
             <p className="job-meta__value">{job.providerKey}</p>
           </div>
           <div className="job-meta__item">
-            <p className="job-meta__label">Status</p>
+            <p className="job-meta__label">{t("job.status")}</p>
             <p className="job-meta__value">
               <JobStatusBadge status={job.status} />
             </p>
           </div>
           {job.markdownPath && (
             <div className="job-meta__item">
-              <p className="job-meta__label">Output</p>
+              <p className="job-meta__label">{t("job.output")}</p>
               <p className="job-meta__value job-meta__value--muted">{job.markdownPath}</p>
             </div>
           )}
@@ -168,6 +183,17 @@ export function JobPage({ jobId, onBack, onOpenBatch }: Props) {
         )}
 
         <div className="job-actions" id={`job-actions-${job.id}`}>
+          {job.status === "processing" && (
+            <button
+              type="button"
+              className="btn btn--ghost"
+              id="cancel-job-btn"
+              disabled={busy}
+              onClick={() => void handleCancel()}
+            >
+              {busy ? t("job.cancelling") : t("job.cancel")}
+            </button>
+          )}
           {job.retryable && (
             <button
               type="button"
@@ -176,7 +202,7 @@ export function JobPage({ jobId, onBack, onOpenBatch }: Props) {
               disabled={busy}
               onClick={() => void handleRetry()}
             >
-              {busy ? "Retrying..." : "Retry job"}
+              {busy ? t("job.retrying") : t("job.retry")}
             </button>
           )}
           {job.status === "completed" && job.markdownPath && (
@@ -186,31 +212,31 @@ export function JobPage({ jobId, onBack, onOpenBatch }: Props) {
               id="download-md-btn"
               onClick={() => void handleDownload()}
             >
-              Download markdown
+              {t("job.downloadMd")}
             </button>
           )}
         </div>
 
         {!job.transcriptText ? (
           <p className="transcript-preview__empty" id="transcript-empty">
-            No transcript yet.
+            {t("job.empty")}
           </p>
         ) : (
           <section className="transcript-preview" id="transcript-preview">
             <div className="transcript-preview__header">
-              <h2>Transcript</h2>
+              <h2>{t("job.manuscript")}</h2>
               <button
                 type="button"
                 id="transcript-copy"
                 className="transcript-preview__copy"
                 onClick={() => void handleCopy()}
               >
-                {copyState === "copied" ? "Copied" : "Copy Text"}
+                {copyState === "copied" ? t("job.copied") : t("job.copy")}
               </button>
             </div>
             {copyState === "failed" && (
               <p id="transcript-copy-status" className="transcript-preview__status" role="status">
-                Could not copy text.
+                {t("job.copyFailed")}
               </p>
             )}
             <pre id="transcript-text">{job.transcriptText}</pre>

@@ -8,6 +8,7 @@ import {
   IconMusic,
   IconUploadTray,
 } from "../components/icons";
+import { useLocale } from "../lib/LocaleContext";
 
 type Props = {
   onOpenJob: (id: number) => void;
@@ -16,6 +17,7 @@ type Props = {
 };
 
 export function JobsPage({ onOpenJob, onOpenBatch, onOpenUpload }: Props) {
+  const { t } = useLocale();
   const [rows, setRows] = useState<JobListRow[]>([]);
   const [flat, setFlat] = useState<JobSummary[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -63,16 +65,13 @@ export function JobsPage({ onOpenJob, onOpenBatch, onOpenUpload }: Props) {
   return (
     <section className="page" id="jobs-page">
       <header className="page__header">
-        <p className="page__eyebrow">Local</p>
-        <h1 className="page__title">Jobs</h1>
-        <p className="page__subtitle">
-          Track transcription progress, open completed markdown results, and retry failed runs from
-          one place.
-        </p>
+        <p className="page__eyebrow">{t("jobs.eyebrow")}</p>
+        <h1 className="page__title">{t("jobs.title")}</h1>
+        <p className="page__subtitle">{t("jobs.subtitle")}</p>
         <div className="page__actions">
           <button type="button" className="btn btn--primary" onClick={onOpenUpload}>
             <IconUploadTray className="size-4" />
-            New upload
+            {t("jobs.newUpload")}
           </button>
         </div>
       </header>
@@ -88,23 +87,23 @@ export function JobsPage({ onOpenJob, onOpenBatch, onOpenUpload }: Props) {
           <div className="jobs-stats" id="jobs-stats">
             <div className="jobs-stats__card jobs-stats__card--total">
               <span className="jobs-stats__value">{stats.total}</span>
-              <span className="jobs-stats__label">Total</span>
+              <span className="jobs-stats__label">{t("jobs.total")}</span>
             </div>
             <div className="jobs-stats__card jobs-stats__card--queued">
               <span className="jobs-stats__value">{stats.queued}</span>
-              <span className="jobs-stats__label">Queued</span>
+              <span className="jobs-stats__label">{t("jobs.queued")}</span>
             </div>
             <div className="jobs-stats__card jobs-stats__card--processing">
               <span className="jobs-stats__value">{stats.processing}</span>
-              <span className="jobs-stats__label">Processing</span>
+              <span className="jobs-stats__label">{t("jobs.processing")}</span>
             </div>
             <div className="jobs-stats__card jobs-stats__card--completed">
               <span className="jobs-stats__value">{stats.completed}</span>
-              <span className="jobs-stats__label">Completed</span>
+              <span className="jobs-stats__label">{t("jobs.completed")}</span>
             </div>
             <div className="jobs-stats__card jobs-stats__card--failed">
               <span className="jobs-stats__value">{stats.failed}</span>
-              <span className="jobs-stats__label">Failed</span>
+              <span className="jobs-stats__label">{t("jobs.failed")}</span>
             </div>
           </div>
         )}
@@ -114,13 +113,11 @@ export function JobsPage({ onOpenJob, onOpenBatch, onOpenUpload }: Props) {
             <div className="jobs-empty__icon" aria-hidden="true">
               <IconMusic className="size-7" />
             </div>
-            <p className="jobs-empty__title">No jobs yet</p>
-            <p className="jobs-empty__text">
-              Upload an audio file to start your first transcription.
-            </p>
+            <p className="jobs-empty__title">{t("jobs.emptyTitle")}</p>
+            <p className="jobs-empty__text">{t("jobs.emptyText")}</p>
             <button type="button" className="btn btn--primary" onClick={onOpenUpload}>
               <IconUploadTray className="size-4" />
-              New upload
+              {t("jobs.newUpload")}
             </button>
           </div>
         ) : (
@@ -138,7 +135,7 @@ export function JobsPage({ onOpenJob, onOpenBatch, onOpenUpload }: Props) {
                     <IconFolder />
                   </div>
                   <div className="jobs-row__main">
-                    <p className="jobs-row__title">{row.jobs.length} audios</p>
+                    <p className="jobs-row__title">{t("jobs.audios", { count: row.jobs.length })}</p>
                     <p className="jobs-row__subtitle">
                       {row.jobs.map((j) => j.originalFilename).join(" · ")}
                     </p>
